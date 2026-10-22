@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 
 	"github.com/Tencent/WeKnora/internal/config"
@@ -143,6 +144,18 @@ var _ interfaces.TenantMemberService = (*fakeMemberService)(nil)
 
 func cfgWithRBAC(enabled bool) *config.Config {
 	return &config.Config{Tenant: &config.TenantConfig{EnableRBAC: &enabled}}
+}
+
+func TestIsNoAuthAPI_AllowsPublicBrowserRoutes(t *testing.T) {
+	if !isNoAuthAPI("/", http.MethodGet) {
+		t.Fatal("root path should be public for browser entrypoints")
+	}
+	if !isNoAuthAPI("/favicon.ico", http.MethodGet) {
+		t.Fatal("favicon should be public for browser requests")
+	}
+	if isNoAuthAPI("/api/v1/knowledge", http.MethodGet) {
+		t.Fatal("protected API routes must still require auth")
+	}
 }
 
 func TestResolveTenantRole_ActiveMembershipWins(t *testing.T) {

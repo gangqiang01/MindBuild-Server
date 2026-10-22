@@ -28,3 +28,20 @@ func TestFrontendStaticDoesNotInterceptResourceGrant(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.Equal(t, "resource", recorder.Body.String())
 }
+
+func TestFrontendStaticServesRootPageWhenBundleExists(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	webDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(webDir, "index.html"), []byte("spa-root"), 0o600))
+	t.Setenv("WEKNORA_WEB_DIR", webDir)
+
+	r := gin.New()
+	serveFrontendStatic(r)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "spa-root", recorder.Body.String())
+}

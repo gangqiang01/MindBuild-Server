@@ -34,6 +34,8 @@ var (
 
 // 无需认证的API列表
 var noAuthAPI = map[string][]string{
+	"/":                       {"GET", "HEAD"},
+	"/favicon.ico":            {"GET", "HEAD"},
 	"/health":                 {"GET"},
 	"/api/v1/auth/register":   {"POST"},
 	"/api/v1/auth/login":      {"POST"},

@@ -1,0 +1,1 @@
+import{c as o}from"./settings-BkRhR51X.js";import{w as n,E as r}from"./vendor-highlight-DZD2uw5C.js";function u(a){const t=o(),e=Symbol("assistant-page-context");n(a,s=>{s?t.publishPageContext(e,s):t.retractPageContext(e)},{immediate:!0,deep:!0}),r(()=>t.retractPageContext(e))}export{u};

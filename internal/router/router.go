@@ -170,10 +170,10 @@ func NewRouter(params RouterParams) *gin.Engine {
 		r.Use(embedFrameAncestorsMiddleware(params.EmbedChannelService))
 	}
 
-	// 前端静态文件（仅 Lite 版本内嵌前端）
-	if handler.Edition == "lite" {
-		serveFrontendStatic(r)
-	}
+	// Serve the embedded frontend whenever the built SPA is present. This keeps
+	// the browser landing page available at / even in non-Lite deployments while
+	// still leaving API routes, health checks, and docs untouched.
+	serveFrontendStatic(r)
 
 	// IM 回调路由（在认证中间件之前注册，使用各平台自身的签名验证）
 	RegisterIMRoutes(r, params.IMHandler)

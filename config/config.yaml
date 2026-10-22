@@ -3,6 +3,24 @@ server:
   port: 8080
   host: "0.0.0.0"
 
+database:
+  driver: sqlite
+  host: localhost
+  port: 5432
+  user: ""
+  password: ""
+  name: "weknora"
+  path: ./data/weknora.db
+
+vector_database:
+  driver: qdrant
+  embedded: true
+  host: localhost
+  port: 6334
+  api_key: ""
+  use_tls: false
+  collection: weknora_embeddings
+
 # Conversation service configuration
 # NOTE: Prompt content is resolved from prompt_templates/ YAML files via xxx_id fields.
 # Set the _id to the template ID you want; the system will load its content at startup.

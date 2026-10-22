@@ -12,14 +12,23 @@ import (
 	"github.com/Tencent/WeKnora/internal/logger"
 )
 
-// serveFrontendStatic registers a middleware that serves the frontend SPA
-// from the ./web directory if it exists. Must be called BEFORE auth middleware
-// so static files are served without authentication.
-func serveFrontendStatic(r *gin.Engine) {
-	webDir := os.Getenv("WEKNORA_WEB_DIR")
-	if webDir == "" {
-		webDir = "./web"
+// serveFrontendStatic registers a middleware that serves the frontend SPA.
+// It prefers WEKNORA_WEB_DIR when set, otherwise it falls back to the built-in
+// ./web directory and then the repo checkout's ./frontend directory.
+func resolveFrontendWebDir() string {
+	if webDir := strings.TrimSpace(os.Getenv("WEKNORA_WEB_DIR")); webDir != "" {
+		return webDir
 	}
+	for _, candidate := range []string{"./web", "./frontend"} {
+		if _, err := os.Stat(filepath.Join(candidate, "index.html")); err == nil {
+			return candidate
+		}
+	}
+	return "./web"
+}
+
+func serveFrontendStatic(r *gin.Engine) {
+	webDir := resolveFrontendWebDir()
 	absDir, _ := filepath.Abs(webDir)
 	indexPath := filepath.Join(absDir, "index.html")
 	if _, err := os.Stat(indexPath); err != nil {

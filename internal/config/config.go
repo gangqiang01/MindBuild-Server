@@ -26,6 +26,7 @@ type Config struct {
 	Audit           *AuditConfig           `yaml:"audit"            json:"audit"`
 	OIDCAuth        *OIDCAuthConfig        `yaml:"oidc_auth"        json:"oidc_auth"`
 	Models          []ModelConfig          `yaml:"models"           json:"models"`
+	Database        *DatabaseConfig        `yaml:"database"         json:"database"`
 	VectorDatabase  *VectorDatabaseConfig  `yaml:"vector_database"  json:"vector_database"`
 	DocReader       *DocReaderConfig       `yaml:"docreader"        json:"docreader"`
 	StreamManager   *StreamManagerConfig   `yaml:"stream_manager"   json:"stream_manager"`
@@ -129,8 +130,24 @@ type DocReaderConfig struct {
 	Transport string `yaml:"transport" json:"transport"`
 }
 
+type DatabaseConfig struct {
+	Driver   string `yaml:"driver"   json:"driver"`
+	Host     string `yaml:"host"     json:"host"`
+	Port     int    `yaml:"port"     json:"port"`
+	User     string `yaml:"user"     json:"user"`
+	Password string `yaml:"password" json:"password"`
+	Name     string `yaml:"name"     json:"name"`
+	Path     string `yaml:"path"     json:"path"`
+}
+
 type VectorDatabaseConfig struct {
-	Driver string `yaml:"driver" json:"driver"`
+	Driver     string `yaml:"driver"     json:"driver"`
+	Host       string `yaml:"host"       json:"host"`
+	Port       int    `yaml:"port"       json:"port"`
+	APIKey     string `yaml:"api_key"    json:"api_key"`
+	UseTLS     bool   `yaml:"use_tls"    json:"use_tls"`
+	Collection string `yaml:"collection" json:"collection"`
+	Embedded   bool   `yaml:"embedded"   json:"embedded"`
 }
 
 // ConversationConfig 对话服务配置
@@ -541,7 +558,33 @@ func ConfigDir() string {
 }
 
 // LoadConfig 从配置文件加载配置
+func EnsureRuntimeEnvFromConfigFile() {
+	if strings.TrimSpace(os.Getenv("DB_DRIVER")) != "" && strings.TrimSpace(os.Getenv("RETRIEVE_DRIVER")) != "" {
+		return
+	}
+
+	candidates := []string{
+		"./config/config.yaml",
+		"./config.yaml",
+		"/home/gangqiangsun/MYPROJECT/GO/WeKnora/config/config.yaml",
+	}
+	for _, candidate := range candidates {
+		data, err := os.ReadFile(candidate)
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		var cfg Config
+		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			continue
+		}
+		ApplyDatabaseEnvOverrides(&cfg)
+		ApplyVectorDatabaseEnvOverrides(&cfg)
+		return
+	}
+}
+
 func LoadConfig() (*Config, error) {
+	EnsureRuntimeEnvFromConfigFile()
 	// 设置配置文件名和路径
 	viper.SetConfigName("config")         // 配置文件名称(不带扩展名)
 	viper.SetConfigType("yaml")           // 配置文件类型
@@ -630,6 +673,8 @@ func LoadConfig() (*Config, error) {
 	}
 
 	// Validate configuration values
+	ApplyDatabaseEnvOverrides(&cfg)
+	ApplyVectorDatabaseEnvOverrides(&cfg)
 	applyOIDCEnvOverrides(&cfg)
 	applyAgentEnvOverrides(&cfg)
 	applyKnowledgeBaseEnvOverrides(&cfg)
@@ -738,6 +783,89 @@ func ValidateConfig(cfg *Config) error {
 		return fmt.Errorf("config validation errors: %s", strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+func ApplyDatabaseEnvOverrides(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	if cfg.Database == nil {
+		cfg.Database = &DatabaseConfig{}
+	}
+	setEnvIfUnset := func(key, value string) {
+		if strings.TrimSpace(os.Getenv(key)) == "" && strings.TrimSpace(value) != "" {
+			_ = os.Setenv(key, strings.TrimSpace(value))
+		}
+	}
+	setEnvIfUnset("DB_DRIVER", cfg.Database.Driver)
+	setEnvIfUnset("DB_HOST", cfg.Database.Host)
+	if cfg.Database.Port > 0 {
+		setEnvIfUnset("DB_PORT", strconv.Itoa(cfg.Database.Port))
+	}
+	setEnvIfUnset("DB_USER", cfg.Database.User)
+	setEnvIfUnset("DB_PASSWORD", cfg.Database.Password)
+	setEnvIfUnset("DB_NAME", cfg.Database.Name)
+	setEnvIfUnset("DB_PATH", cfg.Database.Path)
+	if strings.TrimSpace(os.Getenv("DB_DRIVER")) == "" && strings.TrimSpace(cfg.Database.Driver) != "" {
+		_ = os.Setenv("DB_DRIVER", strings.TrimSpace(cfg.Database.Driver))
+	}
+	if strings.TrimSpace(os.Getenv("DB_HOST")) == "" && strings.EqualFold(strings.TrimSpace(os.Getenv("DB_DRIVER")), "postgres") {
+		_ = os.Setenv("DB_HOST", "localhost")
+	}
+	if strings.TrimSpace(os.Getenv("DB_PORT")) == "" && strings.EqualFold(strings.TrimSpace(os.Getenv("DB_DRIVER")), "postgres") {
+		_ = os.Setenv("DB_PORT", "5432")
+	}
+	if strings.TrimSpace(os.Getenv("DB_PATH")) == "" && strings.EqualFold(strings.TrimSpace(os.Getenv("DB_DRIVER")), "sqlite") {
+		_ = os.Setenv("DB_PATH", "./data/weknora.db")
+	}
+}
+
+func ApplyVectorDatabaseEnvOverrides(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	if cfg.VectorDatabase == nil {
+		cfg.VectorDatabase = &VectorDatabaseConfig{}
+	}
+	vdb := cfg.VectorDatabase
+	setEnvIfUnset := func(key, value string) {
+		if strings.TrimSpace(os.Getenv(key)) == "" && strings.TrimSpace(value) != "" {
+			_ = os.Setenv(key, strings.TrimSpace(value))
+		}
+	}
+	if strings.TrimSpace(vdb.Driver) != "" {
+		driver := strings.TrimSpace(vdb.Driver)
+		if strings.TrimSpace(os.Getenv("RETRIEVE_DRIVER")) == "" {
+			_ = os.Setenv("RETRIEVE_DRIVER", driver)
+		}
+	}
+	if vdb.Embedded && strings.TrimSpace(os.Getenv("RETRIEVE_DRIVER")) == "" {
+		_ = os.Setenv("RETRIEVE_DRIVER", "qdrant")
+	}
+	if strings.EqualFold(strings.TrimSpace(vdb.Driver), "qdrant") || vdb.Embedded {
+		setEnvIfUnset("QDRANT_HOST", vdb.Host)
+		if vdb.Port > 0 {
+			setEnvIfUnset("QDRANT_PORT", strconv.Itoa(vdb.Port))
+		}
+		setEnvIfUnset("QDRANT_API_KEY", vdb.APIKey)
+		if strings.TrimSpace(os.Getenv("QDRANT_USE_TLS")) == "" {
+			if vdb.UseTLS {
+				_ = os.Setenv("QDRANT_USE_TLS", "true")
+			} else {
+				_ = os.Setenv("QDRANT_USE_TLS", "false")
+			}
+		}
+		setEnvIfUnset("QDRANT_COLLECTION", vdb.Collection)
+		if strings.TrimSpace(os.Getenv("QDRANT_HOST")) == "" && vdb.Embedded {
+			_ = os.Setenv("QDRANT_HOST", "localhost")
+		}
+		if strings.TrimSpace(os.Getenv("QDRANT_PORT")) == "" && vdb.Embedded {
+			_ = os.Setenv("QDRANT_PORT", "6334")
+		}
+		if strings.TrimSpace(os.Getenv("QDRANT_COLLECTION")) == "" && vdb.Embedded {
+			_ = os.Setenv("QDRANT_COLLECTION", "weknora_embeddings")
+		}
+	}
 }
 
 func applyOIDCEnvOverrides(cfg *Config) {

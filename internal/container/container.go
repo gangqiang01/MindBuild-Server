@@ -130,6 +130,12 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	// Register resource cleaner for proper cleanup of resources
 	must(container.Provide(NewResourceCleaner, dig.As(new(interfaces.ResourceCleaner))))
 
+	// Ensure startup defaults are seeded from the repo config file before any
+	// DB or retriever initialization touches the environment. This is the
+	// fallback that makes config.yaml work even when the process is started with
+	// a blank environment.
+	config.EnsureRuntimeEnvFromConfigFile()
+
 	// Core infrastructure configuration
 	logger.Debugf(ctx, "[Container] Registering core infrastructure...")
 	must(container.Provide(config.LoadConfig))
@@ -236,6 +242,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 		return b
 	}))
 	must(container.Provide(newAdmissionRegistry))
+	must(container.Provide(newSessionBindingStore))
 	must(container.Provide(newTenantSandboxResolver))
 	// The resolver admits user-mode sessions, so the allocation service has to
 	// exist before the first Invoke that builds a TenantSandboxResolver
@@ -247,6 +254,9 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	) *sandboxalloc.Service {
 		return sandboxalloc.New(repo, configs, sessions, sandboxRedisNamespace())
 	}))
+	must(container.Provide(newBackgroundActivityRegistry))
+	must(container.Provide(newBackgroundNoticeInbox))
+	must(container.Provide(service.NewBackgroundWork))
 
 	// Business service layer
 	logger.Debugf(ctx, "[Container] Registering business services...")
@@ -322,7 +332,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(repository.NewStorageBackendRepository))
 	must(container.Provide(repository.NewResourceRepository))
 	must(container.Provide(repository.NewTemporaryDocumentRepository))
-	must(container.Provide(service.NewResourceCatalog))
+	must(container.Provide(service.NewResourceCatalogWithStorage))
 	// TenantStoreOwnership adapter used by the retriever factory functions
 	// to verify that a resolved VectorStore belongs to the caller's tenant.
 	must(container.Provide(retriever.NewVectorStoreRepoOwnership))
@@ -433,14 +443,16 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	) *service.PinnedSessionSandbox {
 		return service.NewPinnedSessionSandbox(pinner, resolver, mgr, host)
 	}))
+	must(container.Provide(newShellJobService))
 	must(container.Provide(func(
 		mgr sandbox.Manager,
 		pinned *service.PinnedSessionSandbox,
+		activity interfaces.ActivityRegistry,
 	) *service.WorkspaceCheckpointer {
 		if runner, ok := mgr.(service.SandboxShellRunner); ok {
-			return service.NewWorkspaceCheckpointer(runner)
+			return service.NewWorkspaceCheckpointer(runner).WithActivityRegistry(activity)
 		}
-		return service.NewWorkspaceCheckpointer(pinned)
+		return service.NewWorkspaceCheckpointer(pinned).WithActivityRegistry(activity)
 	}))
 	must(container.Provide(func(
 		mgr sandbox.Manager,
@@ -804,6 +816,14 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	// the daemon alive until the process is killed.
 	must(container.Invoke(func(cleaner interfaces.ResourceCleaner, _ *browserskill.Manager) {
 		cleaner.Promote("BrowserSkill")
+	}))
+	must(container.Invoke(startShellJobSweeper))
+	// Background shell jobs shut down before the database and streams: their
+	// watchers write terminal state locally and must not race the cleanup that
+	// follows. Cleanup runs in reverse, so promote runs them first. A missing
+	// name is a no-op, so the web build can invoke this without a local hook.
+	must(container.Invoke(func(cleaner interfaces.ResourceCleaner, _ *service.ShellJobService) {
+		cleaner.Promote("LocalShellJobs")
 	}))
 
 	logger.Infof(ctx, "[Container] Container initialization completed successfully")
@@ -1338,7 +1358,10 @@ func initFileService(cfg *config.Config, catalog interfaces.ResourceCatalog) (in
 	if err != nil {
 		return nil, err
 	}
-	return file.NewResourceCatalogFileService(inner, catalog), nil
+	if _, dummy := inner.(*file.DummyFileService); dummy {
+		return file.NewResourceCatalogFileService(inner, catalog), nil
+	}
+	return file.NewGlobalResourceCatalogFileService(inner, catalog), nil
 }
 
 func initRawFileService(_ *config.Config) (interfaces.FileService, error) {
