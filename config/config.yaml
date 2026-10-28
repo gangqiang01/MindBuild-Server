@@ -15,7 +15,7 @@ database:
 vector_database:
   driver: qdrant
   embedded: true
-  host: localhost
+  host: 172.21.73.80
   port: 6334
   api_key: ""
   use_tls: false
@@ -132,3 +132,20 @@ extract:
 tenant:
   # Enable cross-tenant access (can be enabled for intranet environments)
   enable_cross_tenant_access: false
+  # Only system administrators may create workspaces (spaces). Ordinary
+  # users can no longer self-serve; set to true to allow them again.
+  self_service_creation_enabled: false
+
+# One-shot admin account seeding on server startup. On a fresh deployment a
+# shared default workspace is created (if absent) and the account is bound to
+# it as Owner (no per-user personal workspace is minted), then promoted to
+# system administrator. An existing account's password/privileges are left
+# as-is, but its binding to the default workspace is re-asserted on every
+# startup.
+admin_bootstrap:
+  enabled: true
+  username: admin
+  email: admin@advantech.com.cn
+  password: "@dmin123"
+  # Name of the shared workspace the admin is bound to. Empty means "Default".
+  default_tenant_name: "Default"

@@ -313,22 +313,24 @@ func (TenantDisabledSharedAgent) TableName() string {
 
 // CreateOrganizationRequest represents a request to create an organization
 type CreateOrganizationRequest struct {
-	Name                   string `json:"name" binding:"required,min=1,max=255"`
-	Description            string `json:"description" binding:"max=1000"`
-	Avatar                 string `json:"avatar" binding:"omitempty,max=512"` // optional avatar URL
-	InviteCodeValidityDays *int   `json:"invite_code_validity_days"`          // optional: 0=never, 1, 7, 30; default 7
-	MemberLimit            *int   `json:"member_limit"`                       // optional: max members; 0=unlimited; default 50
+	Name        string `json:"name" binding:"required,min=1,max=255"`
+	Description string `json:"description" binding:"max=1000"`
+	Avatar      string `json:"avatar" binding:"omitempty,max=512"` // optional avatar URL
+	// Direct member management does not use invite codes or approval gates.
+	InviteCodeValidityDays *int `json:"-"`
+	MemberLimit            *int `json:"member_limit"` // optional: max members; 0=unlimited; default 50
 }
 
 // UpdateOrganizationRequest represents a request to update an organization
 type UpdateOrganizationRequest struct {
-	Name                   *string `json:"name" binding:"omitempty,min=1,max=255"`
-	Description            *string `json:"description" binding:"omitempty,max=1000"`
-	Avatar                 *string `json:"avatar" binding:"omitempty,max=512"` // optional avatar URL
-	RequireApproval        *bool   `json:"require_approval"`
-	Searchable             *bool   `json:"searchable"`                // open for search so others can discover and join
-	InviteCodeValidityDays *int    `json:"invite_code_validity_days"` // 0=never, 1, 7, 30
-	MemberLimit            *int    `json:"member_limit"`              // max members; 0=unlimited
+	Name        *string `json:"name" binding:"omitempty,min=1,max=255"`
+	Description *string `json:"description" binding:"omitempty,max=1000"`
+	Avatar      *string `json:"avatar" binding:"omitempty,max=512"` // optional avatar URL
+	// Invite/approval semantics are intentionally not part of the direct-add member flow.
+	RequireApproval        *bool `json:"-"`
+	Searchable             *bool `json:"searchable"` // open for search so others can discover and join
+	InviteCodeValidityDays *int  `json:"-"`
+	MemberLimit            *int  `json:"member_limit"` // max members; 0=unlimited
 }
 
 // AddMemberRequest represents a request to add a member to an organization
@@ -409,17 +411,18 @@ type OrganizationResponse struct {
 	// "owner row" in the workspace-keyed members list — comparing
 	// member.tenant_id against owner_tenant_id is the post-Plan-3
 	// equivalent of the old member.user_id == owner_id check.
-	OwnerTenantID           uint64     `json:"owner_tenant_id"`
-	InviteCode              string     `json:"invite_code,omitempty"`
-	InviteCodeExpiresAt     *time.Time `json:"invite_code_expires_at,omitempty"`
-	InviteCodeValidityDays  int        `json:"invite_code_validity_days"`
-	RequireApproval         bool       `json:"require_approval"`
+	OwnerTenantID uint64 `json:"owner_tenant_id"`
+	// Direct-add membership model does not expose invite or approval metadata.
+	InviteCode              string     `json:"-"`
+	InviteCodeExpiresAt     *time.Time `json:"-"`
+	InviteCodeValidityDays  int        `json:"-"`
+	RequireApproval         bool       `json:"-"`
 	Searchable              bool       `json:"searchable"`
 	MemberLimit             int        `json:"member_limit"` // 0 = unlimited
 	MemberCount             int        `json:"member_count"`
 	ShareCount              int        `json:"share_count"`                // 共享到该组织的知识库数量
 	AgentShareCount         int        `json:"agent_share_count"`          // 共享到该组织的智能体数量
-	PendingJoinRequestCount int        `json:"pending_join_request_count"` // 待审批加入申请数（仅管理员可见）
+	PendingJoinRequestCount int        `json:"-"`                           // direct-add member flow has no pending join approvals
 	IsOwner                 bool       `json:"is_owner"`
 	MyRole                  string     `json:"my_role,omitempty"`
 	HasPendingUpgrade       bool       `json:"has_pending_upgrade"` // 当前用户是否有待处理的权限升级申请

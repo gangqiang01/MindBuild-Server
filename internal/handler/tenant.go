@@ -213,8 +213,9 @@ func (h *TenantHandler) resolveMaxOwnedTenantsPerUser(ctx context.Context) int {
 // CreateTenant godoc
 // @Summary      创建空间
 // @Description  创建新的空间。任意已登录用户均可调用以建立自己的新工作区，
-// @Description  调用方会被自动设为该空间的 Owner。跨空间超管仍可像以前一样
-// @Description  通过本接口创建任意空间。
+// @Description  调用方会被自动设为该空间的 Owner。系统管理员与跨空间超管仍可
+// @Description  像以前一样通过本接口创建任意空间（即使部署策略关闭了普通
+// @Description  用户的自助创建）。
 // @Description  当 tenant.auto_create_api_key（或 WEKNORA_TENANT_AUTO_CREATE_API_KEY）
 // @Description  开启时，会自动创建一个 full_access API Key，并在响应体的 data.api_key 字段返回其明文 token。
 // @Tags         空间管理
@@ -241,7 +242,10 @@ func (h *TenantHandler) CreateTenant(c *gin.Context) {
 	}
 	apiKeyScope, hasAPIKeyScope := types.TenantAPIKeyScopeFromContext(ctx)
 	platformCaller := hasAPIKeyScope && apiKeyScope.IsPlatform()
-	catalogManager := caller.CanAccessAllTenants || platformCaller
+	// System administrators are catalog managers too: even when the
+	// deployment disables self-service creation for ordinary users, an
+	// admin must still be able to create workspaces.
+	catalogManager := caller.CanAccessAllTenants || caller.IsSystemAdmin || platformCaller
 
 	// Deployment-level policy: ordinary users may be restricted to joining
 	// existing workspaces by invitation. This check is authoritative; the
@@ -387,9 +391,9 @@ func (h *TenantHandler) CreateTenant(c *gin.Context) {
 		// all proceed, all insert. Re-count AFTER the Owner membership
 		// is committed; if we landed over the cap, roll back this
 		// tenant + its membership so the bound holds in steady state.
-		// We only do this for non-superusers (the only path that has
-		// a cap) — superusers are exempt above.
-		if !caller.CanAccessAllTenants {
+		// We only do this for non-catalog-managers (the only path that
+		// has a cap) — superusers and system admins are exempt above.
+		if !catalogManager {
 			memberships, listErr := h.memberService.ListByUser(ctx, caller.ID)
 			if listErr != nil {
 				logger.Errorf(ctx, "Post-create quota recount failed for user %s tenant %d: %v",

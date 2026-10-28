@@ -42,6 +42,19 @@ func (o *inviteRepOrg) AddTenantMember(_ context.Context, _ string, _ uint64, re
 	return nil
 }
 
+func (o *inviteRepOrg) GetTenantRoleInOrg(_ context.Context, _ string, tenantID uint64) (types.OrgMemberRole, error) {
+	for _, member := range o.members {
+		if member.TenantID == tenantID {
+			return member.Role, nil
+		}
+	}
+	return types.OrgRoleViewer, nil
+}
+
+func (o *inviteRepOrg) GetPendingUpgradeRequest(context.Context, string, uint64) (*types.OrganizationJoinRequest, error) {
+	return nil, repository.ErrJoinRequestNotFound
+}
+
 func (o *inviteRepOrg) ListTenantMembers(context.Context, string) ([]*types.OrganizationTenantMember, error) {
 	return o.members, nil
 }
@@ -92,6 +105,27 @@ func TestInviteMemberAttachesNoRepresentative(t *testing.T) {
 		require.NotNil(t, org.representative, body)
 		require.Empty(t, *org.representative, body)
 	}
+}
+
+func TestOrgResponseOmitsInviteMetadata(t *testing.T) {
+	org := &inviteRepOrg{members: []*types.OrganizationTenantMember{{TenantID: 7, Role: types.OrgRoleAdmin}}}
+	h := &OrganizationHandler{orgService: org, tenantService: inviteRepTenants{}}
+	ctx := context.WithValue(context.Background(), types.TenantIDContextKey, uint64(7))
+
+	resp := h.toOrgResponse(ctx, &types.Organization{
+		ID:                     "org-1",
+		Name:                   "Test Org",
+		OwnerID:                "owner-user",
+		OwnerTenantID:          7,
+		InviteCode:             "legacy-code",
+		InviteCodeExpiresAt:    nil,
+		InviteCodeValidityDays: 7,
+		RequireApproval:       true,
+	}, "owner-user")
+
+	require.Empty(t, resp.InviteCode)
+	require.Zero(t, resp.PendingJoinRequestCount)
+	require.False(t, resp.RequireApproval)
 }
 
 // Other workspaces' users' emails are not part of the roster.

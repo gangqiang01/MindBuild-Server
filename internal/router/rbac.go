@@ -213,6 +213,13 @@ func (g *rbacGuards) Owner() gin.HandlerFunc {
 	return middleware.RequireRole(types.TenantRoleOwner, g.cfg)
 }
 
+// OwnerOrSystemAdmin admits the tenant Owner (as Owner() does) plus platform
+// system administrators, who manage members across tenants independent of
+// their role in the active tenant. Used for tenant member mutations.
+func (g *rbacGuards) OwnerOrSystemAdmin() gin.HandlerFunc {
+	return middleware.RequireRoleOrSystemAdmin(types.TenantRoleOwner, g.cfg)
+}
+
 // API-key authorization — a SEPARATE authority from the JWT role/ownership
 // guards above. Instead of stacking a per-route guard that also had to know
 // the caller's ownership, every API-key-accessible route declares one

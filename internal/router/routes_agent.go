@@ -108,16 +108,10 @@ func RegisterOrganizationRoutes(r *gin.RouterGroup, orgHandler *handler.Organiza
 		// List my organizations — Viewer+ floor so revoked/non-member
 		// accounts whose JWT still validates can't enumerate org membership.
 		orgs.GET("", g.Viewer(), orgHandler.ListMyOrganizations)
-		// Preview organization by invite code (without joining) — Viewer+
-		orgs.GET("/preview/:code", g.Viewer(), orgHandler.PreviewByInviteCode)
-		// Join organization by invite code (Admin+ in caller's tenant only)
-		orgs.POST("/join", g.Admin(), orgHandler.JoinByInviteCode)
-		// Submit join request (for organizations that require approval) (Admin+)
-		orgs.POST("/join-request", g.Admin(), orgHandler.SubmitJoinRequest)
-		// Search searchable (discoverable) organizations — Viewer+
+		// Direct-add membership only: organization joining is not an invitation-based flow.
+		// Searchable discovery remains available, but a tenant is added only by admin action.
 		orgs.GET("/search", g.Viewer(), orgHandler.SearchOrganizations)
-		// Join searchable organization by ID (no invite code) (Admin+)
-		orgs.POST("/join-by-id", g.Admin(), orgHandler.JoinByOrganizationID)
+		// Direct member addition is handled by the tenant-scoped member endpoints below.
 		// Get organization by ID — Viewer+
 		orgs.GET("/:id", g.Viewer(), orgHandler.GetOrganization)
 		// Update organization — Admin+ in caller's tenant. The service

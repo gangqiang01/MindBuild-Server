@@ -44,6 +44,8 @@ web/
 **/__pycache__
 /scripts/scale_dev_jobs.sh
 /server
+# 前端构建产物（真正的前端源码在独立仓库），整个目录不纳入版本管理
+frontend/
 frontend/.vite
 frontend/chrome-extension/
 WeKnora-Chrome-Extension

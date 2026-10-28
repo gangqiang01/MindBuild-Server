@@ -1848,33 +1848,37 @@ func (h *OrganizationHandler) toOrgResponse(ctx context.Context, org *types.Orga
 		isOwner = org.OwnerID == currentUserID
 	}
 	resp := types.OrganizationResponse{
-		ID:                     org.ID,
-		Name:                   org.Name,
-		Description:            org.Description,
-		Avatar:                 org.Avatar,
-		OwnerID:                org.OwnerID,
-		OwnerTenantID:          org.OwnerTenantID,
-		IsOwner:                isOwner,
-		RequireApproval:        org.RequireApproval,
-		Searchable:             org.Searchable,
-		MemberLimit:            org.MemberLimit,
-		InviteCodeValidityDays: org.InviteCodeValidityDays,
-		CreatedAt:              org.CreatedAt,
-		UpdatedAt:              org.UpdatedAt,
+		ID:            org.ID,
+		Name:          org.Name,
+		Description:   org.Description,
+		Avatar:        org.Avatar,
+		OwnerID:       org.OwnerID,
+		OwnerTenantID: org.OwnerTenantID,
+		IsOwner:       isOwner,
+		Searchable:    org.Searchable,
+		MemberLimit:   org.MemberLimit,
+		CreatedAt:     org.CreatedAt,
+		UpdatedAt:     org.UpdatedAt,
 	}
 
 	// Get member count (per-tenant)
-	if members, err := h.orgService.ListTenantMembers(ctx, org.ID); err == nil {
-		resp.MemberCount = len(members)
+	if h.orgService != nil {
+		if members, err := h.orgService.ListTenantMembers(ctx, org.ID); err == nil {
+			resp.MemberCount = len(members)
+		}
 	}
 
-	// Get shared knowledge base count for this organization
-	if shares, err := h.shareService.ListSharesByOrganization(ctx, org.ID); err == nil {
-		resp.ShareCount = len(shares)
+	// Get shared knowledge base count for this organization.
+	if h.shareService != nil {
+		if shares, err := h.shareService.ListSharesByOrganization(ctx, org.ID); err == nil {
+			resp.ShareCount = len(shares)
+		}
 	}
-	// Get shared agent count for this organization
-	if agentShares, err := h.agentShareService.ListSharesByOrganization(ctx, org.ID); err == nil {
-		resp.AgentShareCount = len(agentShares)
+	// Get shared agent count for this organization.
+	if h.agentShareService != nil {
+		if agentShares, err := h.agentShareService.ListSharesByOrganization(ctx, org.ID); err == nil {
+			resp.AgentShareCount = len(agentShares)
+		}
 	}
 
 	// Get current tenant's role in this organization
@@ -1883,18 +1887,9 @@ func (h *OrganizationHandler) toOrgResponse(ctx context.Context, org *types.Orga
 		resp.MyRole = string(role)
 		isAdmin = (role == types.OrgRoleAdmin)
 	}
-	// Invite-code / pending-request visibility is keyed on whether the
-	// caller can administer the org. Post-Plan-3 that's "isAdmin in the
-	// caller's tenant context, OR the caller's tenant is the owner
-	// tenant"; we already computed isOwner with the tenant-first logic
-	// above, so reuse it instead of comparing user IDs again.
-	if isAdmin || isOwner {
-		resp.InviteCode = org.InviteCode
-		resp.InviteCodeExpiresAt = org.InviteCodeExpiresAt
-		if n, err := h.orgService.CountPendingJoinRequests(ctx, org.ID); err == nil {
-			resp.PendingJoinRequestCount = int(n)
-		}
-	}
+	// Direct-add membership does not surface invite or approval metadata in the organization payload.
+	_ = isAdmin
+	_ = isOwner
 
 	// Check if current tenant has pending upgrade request
 	if _, err := h.orgService.GetPendingUpgradeRequest(ctx, org.ID, currentTenantID); err == nil {

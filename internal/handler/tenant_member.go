@@ -305,6 +305,172 @@ func addMemberAndRespond(
 	writeAddMemberSuccess(c, user, member)
 }
 
+// createMemberRequest is the JSON body for POST /tenants/:id/members/create.
+// Unlike addMemberRequest it carries the identity fields needed to provision
+// a brand-new account when the email is not registered yet: Username plus an
+// optional Password. An absent (nil) password makes the service mint a
+// random one that is returned exactly once in the response body.
+type createMemberRequest struct {
+	Username string           `json:"username" binding:"required,min=2,max=50"`
+	Email    string           `json:"email"    binding:"required,email"`
+	Role     types.TenantRole `json:"role"     binding:"required"`
+	Password *string          `json:"password"`
+}
+
+// createMemberResponse is the `data` payload for POST /tenants/:id/members/create.
+// UserCreated distinguishes "we minted a new account" from "we bound an
+// existing one" so the UI can decide whether the one-time GeneratedPassword
+// needs to be revealed. GeneratedPassword is populated exactly once, only
+// for a freshly created account with a server-minted password, and is never
+// logged or retrievable again.
+type createMemberResponse struct {
+	Member            types.TenantMemberResponse `json:"member"`
+	UserCreated       bool                       `json:"user_created"`
+	GeneratedPassword string                     `json:"generated_password,omitempty"`
+}
+
+// createMemberSuccessResponse is the 201 envelope for POST /tenants/:id/members/create.
+// It wraps createMemberResponse in the standard {success, data} shape shared by the
+// rest of the tenant API (see writeAddMemberSuccess), so the frontend can read
+// resp.data.member / resp.data.generated_password uniformly.
+type createMemberSuccessResponse struct {
+	Success bool                 `json:"success" example:"true"`
+	Data    createMemberResponse `json:"data"`
+}
+
+// CreateMember godoc
+// @Summary      创建用户并添加为空间成员（直建路径）
+// @Description  Owner 在成员管理里直接建档并绑定角色，替代邮箱邀请流程：
+// @Description
+//
+//	- 邮箱已注册：直接复用该账号并写入指定角色的 active 成员关系，
+//	  绝不改写其密码（重置密码走系统管理员接口）；
+//	- 邮箱未注册：按 tenantless 方式新建账号（不另建个人空间，该空间
+//	  即其首个成员身份，登录时自动落入本空间）；密码缺省时服务端
+//	  随机生成，仅在响应体 generated_password 字段返回一次。
+//
+//	身份冲突（邮箱属于一个账号、用户名属于另一个）返回 409；
+//	用户已是本空间成员同样返回 409（与 AddMember 一致）。
+//
+// @Tags         空间成员
+// @Accept       json
+// @Produce      json
+// @Param        id       path  string  true  "空间 ID"
+// @Param        request  body  createMemberRequest  true  "创建成员请求"
+// @Success      201  {object}  createMemberSuccessResponse
+// @Failure      400  {object}  map[string]interface{}  "参数错误 / 密码策略不满足"
+// @Failure      409  {object}  map[string]interface{}  "身份冲突 / 已是成员"
+// @Security     Bearer
+// @Router       /tenants/{id}/members/create [post]
+func (h *TenantMemberHandler) CreateMember(c *gin.Context) {
+	ctx := c.Request.Context()
+	tenantID, ok := parseTenantIDFromPath(c)
+	if !ok {
+		return
+	}
+
+	var req createMemberRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.Error(apperrors.NewValidationError("invalid request body").WithDetails(err.Error()))
+		return
+	}
+	req.Username = strings.TrimSpace(req.Username)
+	req.Email = strings.TrimSpace(req.Email)
+	if !req.Role.IsValid() {
+		c.Error(apperrors.NewValidationError("role must be one of owner/admin/contributor/viewer"))
+		return
+	}
+
+	// 1) Resolve the target account: reuse it when the email is already
+	// registered, otherwise provision a fresh tenantless account whose
+	// first membership is this tenant (login lands here via
+	// homeOrFirstMembershipTenant).
+	user, err := h.userService.GetUserByEmail(ctx, req.Email)
+	var generatedPassword string
+	userCreated := false
+	if err != nil {
+		if !errors.Is(err, apprepo.ErrUserNotFound) {
+			// Any other lookup error (DB down, ...) means we cannot tell
+			// whether the account exists, so skip rather than risk a
+			// duplicate insert.
+			logger.Errorf(ctx, "CreateMember user lookup failed: email=%s err=%v",
+				secutils.SanitizeForLog(req.Email), err)
+			c.Error(apperrors.NewInternalServerError("failed to look up user").WithDetails(err.Error()))
+			return
+		}
+		user, generatedPassword, err = h.userService.AdminCreateUser(ctx,
+			&types.AdminCreateUserRequest{
+				Username: req.Username,
+				Email:    req.Email,
+				Password: req.Password,
+			},
+			types.TenantProvisioningTenantless)
+		switch {
+		case err == nil:
+			userCreated = true
+		case errors.Is(err, service.ErrUserEmailExists), errors.Is(err, service.ErrUserUsernameExists):
+			// Sequential-idempotency duplicate: the service already
+			// resolved the existing row for us. Bind it; its password
+			// is deliberately left untouched.
+			if user == nil {
+				logger.Errorf(ctx, "CreateMember duplicate without resolved user: email=%s err=%v",
+					secutils.SanitizeForLog(req.Email), err)
+				c.Error(apperrors.NewInternalServerError("failed to create user").WithDetails(err.Error()))
+				return
+			}
+		case errors.Is(err, service.ErrUsernameTakenByOther):
+			// details 标签供前端映射本地化文案：邮箱未注册、仅用户名被占用。
+			c.Error(apperrors.NewConflictError(err.Error()).WithDetails("username_taken"))
+			return
+		case errors.Is(err, service.ErrUserIdentityConflict):
+			c.Error(apperrors.NewConflictError(err.Error()).WithDetails("identity_conflict"))
+			return
+		case errors.Is(err, service.ErrPasswordPolicy):
+			c.Error(apperrors.NewValidationError(err.Error()))
+			return
+		default:
+			logger.Errorf(ctx, "CreateMember user provisioning failed: email=%s err=%v",
+				secutils.SanitizeForLog(req.Email), err)
+			c.Error(apperrors.NewInternalServerError("failed to create user").WithDetails(err.Error()))
+			return
+		}
+	}
+
+	// 2) Bind the role. Reuse the shared sentinel mapping so this path,
+	// AddMember and the invitation auto-accept branch never drift.
+	caller, _ := types.UserIDFromContext(ctx)
+	var invitedBy *string
+	if caller != "" && !types.IsSyntheticUserID(caller) {
+		invitedBy = &caller
+	}
+
+	member, addErr := h.memberService.AddMember(ctx, user.ID, tenantID, req.Role, invitedBy)
+	if addErr != nil {
+		writeAddMemberError(c, ctx, user, tenantID, addErr)
+		return
+	}
+
+	logger.Infof(ctx, "CreateMember: user %s (created=%v) bound to tenant %d as %s",
+		user.Email, userCreated, tenantID, req.Role)
+	c.JSON(http.StatusCreated, createMemberSuccessResponse{
+		Success: true,
+		Data: createMemberResponse{
+			Member: types.TenantMemberResponse{
+				UserID:    member.UserID,
+				Email:     user.Email,
+				Username:  user.Username,
+				Avatar:    user.Avatar,
+				Role:      member.Role,
+				Status:    member.Status,
+				InvitedBy: member.InvitedBy,
+				JoinedAt:  member.JoinedAt,
+			},
+			UserCreated:       userCreated,
+			GeneratedPassword: generatedPassword,
+		},
+	})
+}
+
 // UpdateMemberRole godoc
 // @Summary      修改空间成员角色
 // @Description  Owner 修改某位成员在当前空间内的角色；不能将最后一位 Owner 降级

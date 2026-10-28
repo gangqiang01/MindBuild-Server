@@ -47,6 +47,13 @@ var (
 	// user, so a blind idempotent retry would return the wrong account.
 	ErrUserIdentityConflict = errors.New("email and username refer to conflicting existing identities")
 
+	// ErrUsernameTakenByOther is returned by AdminCreateUser when the
+	// requested email is unregistered but the requested username belongs to
+	// an existing account. Unlike ErrUserIdentityConflict the email side is
+	// free — the operator only needs to pick a different username (or the
+	// username the email actually belongs to).
+	ErrUsernameTakenByOther = errors.New("username is already used by another account; the email is not registered")
+
 	// ErrPasswordPolicy is returned when a newly chosen password does not
 	// meet the product's public 8-32 character, letter-and-number contract.
 	// It is exported so HTTP handlers can translate the failure to a 400
@@ -919,6 +926,14 @@ func (s *userService) adminCreateUserOnDuplicate(
 	}
 	if adminCreateIdentityMatches(existing, req.Username, req.Email) {
 		return existing, "", dupErr
+	}
+	// The existing row matched on exactly one identity. When the username
+	// was the colliding key, the email is unregistered and the operator only
+	// needs a different username — a distinct, actionable error. When the
+	// email was the colliding key, the requested username points at a
+	// different identity than the email owner: a true identity conflict.
+	if errors.Is(dupErr, ErrUserUsernameExists) {
+		return nil, "", ErrUsernameTakenByOther
 	}
 	return nil, "", ErrUserIdentityConflict
 }

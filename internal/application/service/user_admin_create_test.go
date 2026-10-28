@@ -324,8 +324,10 @@ func TestAdminCreateUserRejectsPartialUsernameConflict(t *testing.T) {
 	_, _, err := svc.AdminCreateUser(context.Background(), &types.AdminCreateUserRequest{
 		Username: "alice", Email: "bob@example.com", Password: new("PlainPass9"),
 	}, types.TenantProvisioningTenantless)
-	if !errors.Is(err, ErrUserIdentityConflict) {
-		t.Fatalf("err=%v, want ErrUserIdentityConflict", err)
+	// The email is unregistered and only the username collides, so this is
+	// the actionable "username taken" error, not a full identity conflict.
+	if !errors.Is(err, ErrUsernameTakenByOther) {
+		t.Fatalf("err=%v, want ErrUsernameTakenByOther", err)
 	}
 	if repo.created != nil {
 		t.Fatal("conflicting request reached persistence")

@@ -339,9 +339,13 @@ CREATE INDEX IF NOT EXISTS idx_auth_tokens_token_type ON auth_tokens(token_type)
 CREATE INDEX IF NOT EXISTS idx_auth_tokens_expires_at ON auth_tokens(expires_at);
 
 -- tenant_members carries the per-(user, tenant) TenantRole used by the
--- tenant-level RBAC introduced in #1303. SQLite does not support partial
--- indexes the same way Postgres does, so we use a plain unique index on
--- (user_id, tenant_id) — soft-deleted rows are filtered by the GORM scope.
+-- tenant-level RBAC introduced in #1303. The unique constraint is PARTIAL
+-- (WHERE deleted_at IS NULL): a removed membership is soft-deleted, and the
+-- same user must be re-addable to the tenant later. A plain (non-partial)
+-- unique index would keep the soft-deleted row in the index and permanently
+-- block re-adding — the index is enforced by SQLite, not by the GORM
+-- soft-delete scope (which only filters reads). SQLite DOES support partial
+-- indexes, so this matches the Postgres shape in versioned/000043.
 CREATE TABLE IF NOT EXISTS tenant_members (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id VARCHAR(36) NOT NULL,
@@ -355,7 +359,8 @@ CREATE TABLE IF NOT EXISTS tenant_members (
     deleted_at DATETIME
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tenant_members_user_tenant_unique
-    ON tenant_members(user_id, tenant_id);
+    ON tenant_members(user_id, tenant_id)
+    WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_tenant_members_tenant_role
     ON tenant_members(tenant_id, role);
 CREATE INDEX IF NOT EXISTS idx_tenant_members_user

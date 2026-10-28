@@ -23,6 +23,7 @@ type Config struct {
 	KnowledgeBase   *KnowledgeBaseConfig   `yaml:"knowledge_base"   json:"knowledge_base"`
 	Tenant          *TenantConfig          `yaml:"tenant"           json:"tenant"`
 	Auth            *AuthConfig            `yaml:"auth"             json:"auth"`
+	AdminBootstrap  *AdminBootstrapConfig  `yaml:"admin_bootstrap"  json:"admin_bootstrap"`
 	Audit           *AuditConfig           `yaml:"audit"            json:"audit"`
 	OIDCAuth        *OIDCAuthConfig        `yaml:"oidc_auth"        json:"oidc_auth"`
 	Models          []ModelConfig          `yaml:"models"           json:"models"`
@@ -315,6 +316,32 @@ func (t *TenantConfig) IsRBACEnforced() bool {
 // tenants. Nil keeps the historical behaviour enabled.
 func (t *TenantConfig) IsSelfServiceCreationEnabled() bool {
 	return t == nil || t.SelfServiceCreationEnabled == nil || *t.SelfServiceCreationEnabled
+}
+
+// AdminBootstrapConfig controls the one-shot admin account seeding that
+// runs on server startup (cmd/server/bootstrap.go). When Enabled, a fresh
+// deployment registers the account on first boot (personal workspace +
+// Owner membership included) and promotes it to system administrator.
+// An already-existing account is never modified, so operators can still
+// rotate the password or revoke privileges through the UI without the
+// change being silently undone on the next restart.
+type AdminBootstrapConfig struct {
+	// Enabled toggles the seeding step. Default false (opt-in).
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// Username of the seeded admin account.
+	Username string `yaml:"username" json:"username"`
+	// Email of the seeded admin account (unique login identifier).
+	Email string `yaml:"email" json:"email"`
+	// Password of the seeded admin account, in plaintext. It is hashed
+	// (bcrypt) before being persisted; the plaintext never leaves this
+	// process.
+	Password string `yaml:"password" json:"password"`
+	// DefaultTenantName is the name of the shared workspace the bootstrap
+	// admin is bound to as Owner. On a fresh deployment the workspace is
+	// created on first boot if it does not already exist, and the admin
+	// logs straight into it (no per-user personal workspace is minted).
+	// Empty means "Default".
+	DefaultTenantName string `yaml:"default_tenant_name" json:"default_tenant_name"`
 }
 
 // AuditConfig governs durable audit log behaviour. Writes happen on
