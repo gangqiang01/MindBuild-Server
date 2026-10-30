@@ -66,6 +66,8 @@ var (
 	// without an active Owner. Demoting the last Owner or removing them
 	// is forbidden; an explicit ownership transfer must happen first.
 	ErrLastOwner = errors.New("cannot demote or remove the last active owner of the tenant")
+
+	ErrProtectedAdminUser = errors.New("the admin user cannot be removed")
 )
 
 const (
@@ -404,6 +406,15 @@ func (s *tenantMemberService) RemoveMember(ctx context.Context, userID string, t
 	}
 	if current == nil {
 		return ErrMembershipNotFound
+	}
+	if s.userRepo != nil {
+		user, err := s.userRepo.GetUserByID(ctx, userID)
+		if err != nil && !errors.Is(err, apprepo.ErrUserNotFound) {
+			return err
+		}
+		if user != nil && strings.EqualFold(strings.TrimSpace(user.Username), "admin") {
+			return ErrProtectedAdminUser
+		}
 	}
 	if current.Role == types.TenantRoleOwner {
 		err := s.repo.RemoveOwnerAtomically(ctx, userID, tenantID)

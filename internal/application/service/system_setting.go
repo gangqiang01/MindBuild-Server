@@ -93,6 +93,10 @@ type settingSpec struct {
 	// (e.g. asynq worker pool size). The UI shows a restart badge; the
 	// service persists the flag on first write.
 	RequiresRestart bool
+	// Secret marks keys whose value is a credential (e.g. SMTP password).
+	// The UI renders them in a password input so the value is not flashed
+	// on screen; the API still returns the raw value (SystemAdmin-gated).
+	Secret bool
 }
 
 // registry pins the set of legal keys. Expanding it is a deliberate,
@@ -315,6 +319,74 @@ var registry = map[string]settingSpec{
 		Description: "后台任务（文档入库/富化）对单个模型的默认并发上限，按模型 ID 全副本共享。" +
 			"每次调用实时读取，修改后立即生效、无需重启。0 或负数表示关闭默认限制" +
 			"（各模型仍会尊重自身在模型管理里配置的上限）。仅影响后台任务，不影响交互式对话。",
+	},
+	// ---- 邮件服务器（SMTP）----
+	// Platform-wide SMTP relay used for user-creation notification emails.
+	// All keys are read on every send attempt (CreateSystemUser / the admin
+	// test-email endpoint), so edits take effect immediately — no restart,
+	// no in-process SMTP client pool to invalidate. Sending is best-effort:
+	// a missing relay or a failed send NEVER fails user creation itself
+	// (see handler/system_email.go).
+	"email.enabled": {
+		Type:     "bool",
+		EnvName:  "WEKNORA_EMAIL_ENABLED",
+		Default:  false,
+		Category: "email",
+		Description: "是否启用邮件通知。开启后，系统管理员创建用户成功时会尝试把账号信息" +
+			"（用户名/初始密码）发送到该用户邮箱；未配置邮件服务器或发送失败均不影响用户创建，" +
+			"管理员仍可当面或通过其他渠道告知密码。",
+	},
+	"email.smtp_host": {
+		Type:        "string",
+		EnvName:     "WEKNORA_EMAIL_SMTP_HOST",
+		Default:     "",
+		Category:    "email",
+		Description: "SMTP 服务器地址（例如 smtp.example.com）。留空表示未配置，发送邮件时将直接跳过。",
+	},
+	"email.smtp_port": {
+		Type:        "int",
+		EnvName:     "WEKNORA_EMAIL_SMTP_PORT",
+		Default:     int64(587),
+		Category:    "email",
+		Description: "SMTP 服务器端口。STARTTLS 常用 587，SSL/TLS 常用 465，明文常用 25。",
+	},
+	"email.smtp_encryption": {
+		Type:     "string",
+		EnvName:  "WEKNORA_EMAIL_SMTP_ENCRYPTION",
+		Default:  "starttls",
+		Enum:     []string{"starttls", "ssl", "none"},
+		Category: "email",
+		Description: "与 SMTP 服务器的加密方式。starttls = 先明文连接再升级（587 常用）；" +
+			"ssl = 一开始就 TLS 连接（465 常用）；none = 明文不加密（仅限可信内网，不推荐）。",
+	},
+	"email.smtp_username": {
+		Type:        "string",
+		EnvName:     "WEKNORA_EMAIL_SMTP_USERNAME",
+		Default:     "",
+		Category:    "email",
+		Description: "SMTP 认证用户名（通常是发件邮箱）。留空表示 SMTP 服务器不需要认证。",
+	},
+	"email.smtp_password": {
+		Type:        "string",
+		EnvName:     "WEKNORA_EMAIL_SMTP_PASSWORD",
+		Default:     "",
+		Category:    "email",
+		Description: "SMTP 认证密码 / 授权码。仅系统管理员可见；建议使用邮箱服务商生成的授权码而非登录密码。",
+		Secret:      true,
+	},
+	"email.from_address": {
+		Type:        "string",
+		EnvName:     "WEKNORA_EMAIL_FROM_ADDRESS",
+		Default:     "",
+		Category:    "email",
+		Description: "发件人地址（From）。留空时使用 SMTP 认证用户名作为发件人。",
+	},
+	"email.site_url": {
+		Type:        "string",
+		EnvName:     "WEKNORA_EMAIL_SITE_URL",
+		Default:     "",
+		Category:    "email",
+		Description: "站点登录地址（例如 https://mindbuilder.example.com），会包含在发送给新用户的账号邮件中，方便对方直接登录。留空则不展示链接。",
 	},
 }
 
@@ -882,7 +954,7 @@ func (s *systemSettingService) virtualSetting(key string, spec settingSpec) *typ
 		ValueType:       spec.Type,
 		Category:        category,
 		Description:     spec.Description,
-		IsSecret:        false,
+		IsSecret:        spec.Secret,
 		RequiresRestart: spec.RequiresRestart,
 		LastModifiedBy:  "",
 		Enum:            spec.Enum,
@@ -1046,6 +1118,7 @@ func (s *systemSettingService) Update(ctx context.Context, key string, rawValue 
 		}
 		description = spec.Description
 		requiresRestart = spec.RequiresRestart
+		isSecret = spec.Secret
 	}
 
 	row := &types.SystemSetting{

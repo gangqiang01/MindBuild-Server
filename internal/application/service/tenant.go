@@ -7,6 +7,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Tencent/WeKnora/internal/config"
 	werrors "github.com/Tencent/WeKnora/internal/errors"
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/types"
@@ -23,13 +24,24 @@ type ListTenantsParams struct {
 
 // tenantService implements the TenantService interface
 type tenantService struct {
-	repo        interfaces.TenantRepository // Repository for tenant data operations
-	storageRepo interfaces.StorageBackendRepository
+	repo              interfaces.TenantRepository // Repository for tenant data operations
+	storageRepo       interfaces.StorageBackendRepository
+	defaultTenantName string
 }
 
 // NewTenantService creates a new tenant service instance
-func NewTenantService(repo interfaces.TenantRepository, storageRepo interfaces.StorageBackendRepository) interfaces.TenantService {
-	return &tenantService{repo: repo, storageRepo: storageRepo}
+func NewTenantService(
+	repo interfaces.TenantRepository,
+	storageRepo interfaces.StorageBackendRepository,
+	cfg *config.Config,
+) interfaces.TenantService {
+	defaultName := "Default"
+	if cfg != nil && cfg.AdminBootstrap != nil {
+		if name := strings.TrimSpace(cfg.AdminBootstrap.DefaultTenantName); name != "" {
+			defaultName = name
+		}
+	}
+	return &tenantService{repo: repo, storageRepo: storageRepo, defaultTenantName: defaultName}
 }
 
 // CreateTenant creates a new tenant
@@ -195,8 +207,14 @@ func (
 		}
 		description = &value
 	}
-	if _, err := s.GetTenantByID(ctx, id); err != nil {
+	tenant, err := s.GetTenantByID(ctx, id)
+	if err != nil {
 		return nil, err
+	}
+	if name != nil &&
+		strings.TrimSpace(tenant.Name) == s.defaultTenantName &&
+		strings.TrimSpace(*name) != s.defaultTenantName {
+		return nil, werrors.NewConflictError("the default workspace cannot be renamed")
 	}
 	if err := s.repo.UpdateTenantProfile(ctx, id, name, description); err != nil {
 		return nil, err
@@ -228,6 +246,9 @@ func (s *tenantService) DeleteTenant(ctx context.Context, id uint64) error {
 		}
 	} else {
 		logger.Infof(ctx, "Deleting tenant, ID: %d, name: %s", id, tenant.Name)
+		if strings.TrimSpace(tenant.Name) == s.defaultTenantName {
+			return werrors.NewConflictError("the default workspace cannot be deleted")
+		}
 	}
 
 	err = s.repo.DeleteTenant(ctx, id)

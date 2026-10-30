@@ -20,10 +20,10 @@ import (
 //   - GET    /:id/members            Viewer+ (any member can see who else is in)
 //   - POST   /:id/members            Owner+ or system admin (add a member)
 //   - POST   /:id/members/create     Owner+ or system admin (create-or-bind a
-//                                    user account, then add it with the
-//                                    requested role; JWT-only — minting
-//                                    accounts from a machine principal stays
-//                                    on the system-admin surface)
+//     user account, then add it with the
+//     requested role; JWT-only — minting
+//     accounts from a machine principal stays
+//     on the system-admin surface)
 //   - PUT    /:id/members/:user_id   Owner+ or system admin (change roles)
 //   - DELETE /:id/members/:user_id   Owner+ or system admin (remove a member)
 //   - POST   /:id/leave              Viewer+ (any member can quit on their own)
@@ -319,6 +319,10 @@ func RegisterSystemAdminRoutes(
 		adminRoutes.POST("/users/status", handler.SetUserStatus)
 		adminRoutes.POST("/users/reset-password", handler.ResetUserPassword)
 		adminRoutes.POST("/users/create", handler.CreateSystemUser)
+		// Best-effort credential notification: verify the SMTP relay with a
+		// probe mail. Default-denied for API keys (only interactive
+		// SystemAdmin) since it performs an outbound send.
+		adminRoutes.POST("/email/test", handler.TestSystemEmailConfig)
 		adminRoutes.GET("/api-keys", handler.ListPlatformAPIKeys)
 		adminRoutes.POST("/api-keys", handler.CreatePlatformAPIKey)
 		adminRoutes.DELETE("/api-keys/:key_id", handler.DeletePlatformAPIKey)

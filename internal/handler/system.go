@@ -1720,6 +1720,14 @@ type CreateSystemUserResponse struct {
 	// GeneratedPassword is the plaintext password when the server
 	// auto-generated one. Absent when the caller supplied the password.
 	GeneratedPassword string `json:"generated_password,omitempty"`
+	// EmailStatus reports the outcome of the best-effort credential
+	// notification mail: "sent" | "failed" | "disabled" | "not_configured".
+	// Populated only on a fresh create (not the idempotent 200 retry).
+	// A failed send NEVER fails the create — the UI surfaces the status
+	// and the admin can deliver the password out of band.
+	EmailStatus string `json:"email_status,omitempty"`
+	// EmailError carries the send error when EmailStatus == "failed".
+	EmailError string `json:"email_error,omitempty"`
 }
 
 // CreateSystemUser godoc
@@ -1791,15 +1799,29 @@ func (h *SystemHandler) CreateSystemUser(c *gin.Context) {
 	}
 
 	logger.Infof(ctx, "System admin created user %s (ID: %s)", user.Username, user.ID)
+
+	// Best-effort credential notification. The effective password is the
+	// server-minted one when generated, else the caller-supplied value.
+	// A nil settings service (unit tests, lite deploys) yields
+	// email_status="disabled" without touching the network.
+	effectivePassword := generatedPassword
+	if effectivePassword == "" && req.Password != nil {
+		effectivePassword = *req.Password
+	}
+	emailStatus, emailErr := h.notifyCreatedUser(ctx, user, effectivePassword)
+
 	h.emitAdminAudit(ctx, types.AuditActionSystemUserCreated, user, map[string]any{
 		"target_email":       user.Email,
 		"target_username":    user.Username,
 		"password_generated": generatedPassword != "",
 		"idempotent":         false,
+		"email_status":       emailStatus,
 	})
 	c.JSON(http.StatusCreated, CreateSystemUserResponse{
 		User:              user.ToUserInfo(),
 		GeneratedPassword: generatedPassword,
+		EmailStatus:       emailStatus,
+		EmailError:        emailErr,
 	})
 }
 

@@ -343,14 +343,15 @@ type createMemberSuccessResponse struct {
 // @Description  Owner 在成员管理里直接建档并绑定角色，替代邮箱邀请流程：
 // @Description
 //
-//	- 邮箱已注册：直接复用该账号并写入指定角色的 active 成员关系，
-//	  绝不改写其密码（重置密码走系统管理员接口）；
-//	- 邮箱未注册：按 tenantless 方式新建账号（不另建个人空间，该空间
-//	  即其首个成员身份，登录时自动落入本空间）；密码缺省时服务端
-//	  随机生成，仅在响应体 generated_password 字段返回一次。
+//   - 邮箱已注册：直接复用该账号并写入指定角色的 active 成员关系，
+//     绝不改写其密码（重置密码走系统管理员接口）；
 //
-//	身份冲突（邮箱属于一个账号、用户名属于另一个）返回 409；
-//	用户已是本空间成员同样返回 409（与 AddMember 一致）。
+//   - 邮箱未注册：按 tenantless 方式新建账号（不另建个人空间，该空间
+//     即其首个成员身份，登录时自动落入本空间）；密码缺省时服务端
+//     随机生成，仅在响应体 generated_password 字段返回一次。
+//
+//     身份冲突（邮箱属于一个账号、用户名属于另一个）返回 409；
+//     用户已是本空间成员同样返回 409（与 AddMember 一致）。
 //
 // @Tags         空间成员
 // @Accept       json
@@ -554,6 +555,8 @@ func (h *TenantMemberHandler) RemoveMember(c *gin.Context) {
 			c.Error(apperrors.NewNotFoundError("membership not found"))
 		case errors.Is(err, service.ErrLastOwner):
 			c.Error(apperrors.NewConflictError(err.Error()))
+		case errors.Is(err, service.ErrProtectedAdminUser):
+			c.Error(apperrors.NewForbiddenError(err.Error()))
 		default:
 			logger.Errorf(ctx, "RemoveMember failed: user=%s tenant=%d err=%v",
 				userID, tenantID, err)
@@ -596,6 +599,10 @@ func (h *TenantMemberHandler) LeaveTenant(c *gin.Context) {
 			c.Error(apperrors.NewNotFoundError("you are not a member of this workspace"))
 		case errors.Is(err, service.ErrLastOwner):
 			c.Error(apperrors.NewConflictError(err.Error()))
+		case errors.Is(err, service.ErrProtectedAdminUser):
+			c.Error(apperrors.NewForbiddenError(err.Error()))
+		case errors.Is(err, service.ErrProtectedAdminUser):
+			c.Error(apperrors.NewForbiddenError(err.Error()))
 		default:
 			logger.Errorf(ctx, "LeaveTenant failed: user=%s tenant=%d err=%v",
 				caller, tenantID, err)

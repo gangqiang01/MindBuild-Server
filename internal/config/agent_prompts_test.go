@@ -76,6 +76,61 @@ func TestContextTemplatesKeepUserRequestSeparateFromSourceData(t *testing.T) {
 	}
 }
 
+func TestKnowledgeAssistantPromptsUseMindBuildIdentity(t *testing.T) {
+	for _, path := range []string{
+		"../../config/prompt_templates/system_prompt.yaml",
+		"../../config/prompt_templates/intent_prompts.yaml",
+	} {
+		t.Run(path, func(t *testing.T) {
+			data, err := os.ReadFile(path)
+			require.NoError(t, err)
+			var file struct {
+				Templates []PromptTemplate `yaml:"templates"`
+			}
+			require.NoError(t, yaml.Unmarshal(data, &file))
+			require.NotEmpty(t, file.Templates)
+			for _, template := range file.Templates {
+				t.Run(template.ID, func(t *testing.T) {
+					require.Contains(t, template.Content, "MindBuild")
+					require.Contains(t, template.Content, "When asked")
+					require.NotContains(t, template.Content, "WeKnora")
+					require.NotContains(t, template.Content, "Tencent")
+				})
+			}
+		})
+	}
+
+	data, err := os.ReadFile("../../config/prompt_templates/fallback.yaml")
+	require.NoError(t, err)
+	var fallbacks struct {
+		Templates []PromptTemplate `yaml:"templates"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &fallbacks))
+	for _, template := range fallbacks.Templates {
+		if template.Mode != "model" {
+			continue
+		}
+		require.Contains(t, template.Content, "MindBuild", template.ID)
+		require.Contains(t, template.Content, "When asked", template.ID)
+		require.NotContains(t, template.Content, "WeKnora", template.ID)
+		require.NotContains(t, template.Content, "Tencent", template.ID)
+	}
+
+	data, err = os.ReadFile("../../config/prompt_templates/intent_prompts.yaml")
+	require.NoError(t, err)
+	var intents struct {
+		Templates []PromptTemplate `yaml:"templates"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &intents))
+	for _, template := range intents.Templates {
+		if template.ID == "greeting" {
+			require.Contains(t, template.Content, "我是MindBuild知识库助手")
+			return
+		}
+	}
+	t.Fatal("greeting intent prompt not found")
+}
+
 func TestDefaultRewritePreservesActionAndOutputConstraints(t *testing.T) {
 	data, err := os.ReadFile("../../config/prompt_templates/rewrite.yaml")
 	require.NoError(t, err)
