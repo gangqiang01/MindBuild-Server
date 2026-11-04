@@ -17,6 +17,13 @@ RUN if [ -n "$APK_MIRROR_ARG" ]; then \
     rm -rf /var/lib/apt/lists/*
 ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo
 ENV PATH=/usr/local/cargo/bin:$PATH
+# 国内网络下 rustup 官方源 (static.rust-lang.org) 与 crates.io 均不可达，
+# 默认走 rsproxy.cn 镜像；可用 --build-arg RUSTUP_DIST_ARG=... / CARGO_INDEX_ARG=... 覆盖。
+ARG RUSTUP_DIST_ARG=https://rsproxy.cn
+ARG CARGO_INDEX_ARG=https://rsproxy.cn/index/
+ENV RUSTUP_DIST_SERVER=${RUSTUP_DIST_ARG} RUSTUP_UPDATE_ROOT=${RUSTUP_DIST_ARG}/rustup
+RUN mkdir -p /usr/local/cargo && \
+    printf '[source.crates-io]\nreplace-with = "mirror"\n[source.mirror]\nregistry = "sparse+%s"\n' "$CARGO_INDEX_ARG" > /usr/local/cargo/config.toml
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
 COPY scripts/build_browserskill.sh scripts/browserskill-release.json ./scripts/
 ARG TARGETOS
@@ -78,6 +85,12 @@ ENV GO_VERSION=${GO_VERSION_ARG}
 ARG WITH_ANYDOC=1
 ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo
 ENV PATH=/usr/local/cargo/bin:$PATH
+# 同 browserskill 阶段: rustup/crates 走 rsproxy.cn 镜像（可用 build-arg 覆盖）。
+ARG RUSTUP_DIST_ARG=https://rsproxy.cn
+ARG CARGO_INDEX_ARG=https://rsproxy.cn/index/
+ENV RUSTUP_DIST_SERVER=${RUSTUP_DIST_ARG} RUSTUP_UPDATE_ROOT=${RUSTUP_DIST_ARG}/rustup
+RUN mkdir -p /usr/local/cargo && \
+    printf '[source.crates-io]\nreplace-with = "mirror"\n[source.mirror]\nregistry = "sparse+%s"\n' "$CARGO_INDEX_ARG" > /usr/local/cargo/config.toml
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     if [ "$WITH_ANYDOC" = "1" ]; then \
@@ -156,8 +169,14 @@ COPY --from=builder /app/scripts ./scripts
 COPY --from=builder /app/migrations ./migrations
 COPY --from=builder /app/dataset/samples ./dataset/samples
 COPY --from=builder /root/.duckdb /home/appuser/.duckdb
-COPY --from=builder /app/WeKnora .
+COPY --from=builder /app/mindBuilder .
 COPY --from=builder /license-bundle/ ./
+
+# Frontend static assets - the Go server serves the SPA from ./frontend
+# (internal/router/static.go), so there is no separate nginx container.
+# Produced by `make frontend` (npm run build in the frontend repo + copy to
+# ./frontend/) before docker-build-app; absent in fresh clones until then.
+COPY frontend/ ./frontend/
 
 # Copy and make entrypoint script executable
 COPY --from=builder /app/scripts/docker-entrypoint.sh ./scripts/docker-entrypoint.sh
@@ -170,4 +189,4 @@ EXPOSE 8080
 
 
 ENTRYPOINT ["./scripts/docker-entrypoint.sh"]
-CMD ["./WeKnora"]
+CMD ["./mindBuilder"]

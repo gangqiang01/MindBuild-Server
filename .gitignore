@@ -28,8 +28,8 @@ temp/
 logs/
 *.pid
 
-WeKnora
-WeKnora-lite
+mindBuilder
+mindBuilder-lite
 cmd/desktop/build/bin/
 /models/
 test/data/mswag.txt

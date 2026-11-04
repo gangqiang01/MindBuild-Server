@@ -25,7 +25,7 @@ fi
 
 GOOS=$(go env GOOS)
 GOARCH=$(go env GOARCH)
-ARCHIVE="WeKnora-lite_${VERSION}_${GOOS}_${GOARCH}"
+ARCHIVE="mindBuilder-lite_${VERSION}_${GOOS}_${GOARCH}"
 DIST_DIR="dist/${ARCHIVE}"
 
 echo "=== WeKnora Lite Packager ==="
@@ -51,7 +51,7 @@ if [ ! -f web/index.html ]; then
 fi
 
 # ── Step 2: Build Go binary ──
-echo ">> Building WeKnora-lite binary..."
+echo ">> Building mindBuilder-lite binary..."
 export EDITION=lite
 eval "$(./scripts/get_version.sh env)"
 LDFLAGS="-w -s $(./scripts/get_version.sh ldflags)"
@@ -60,14 +60,14 @@ if [ "$(uname)" = "Darwin" ]; then
     export CGO_LDFLAGS="-Wl,-no_warn_duplicate_libraries"
 fi
 CGO_ENABLED=1 go build -tags "sqlite_fts5" -ldflags="${LDFLAGS}" \
-    -o WeKnora-lite ./cmd/server
+    -o mindBuilder-lite ./cmd/server
 
 # ── Step 3: Assemble package ──
 echo ">> Assembling package..."
 rm -rf "${DIST_DIR}"
 mkdir -p "${DIST_DIR}/web"
 
-cp WeKnora-lite "${DIST_DIR}/"
+cp mindBuilder-lite "${DIST_DIR}/"
 bash ./scripts/copy-licenses.sh "${DIST_DIR}"
 if [ -d web ] && [ -f web/index.html ]; then
     cp -r web/* "${DIST_DIR}/web/"

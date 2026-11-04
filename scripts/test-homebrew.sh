@@ -21,7 +21,7 @@ FORMULA_NAME="weknora-lite-test"
 VERSION="test"
 GOOS=$(go env GOOS)
 GOARCH=$(go env GOARCH)
-ARCHIVE="WeKnora-lite_${VERSION}_${GOOS}_${GOARCH}"
+ARCHIVE="mindBuilder-lite_${VERSION}_${GOOS}_${GOARCH}"
 TARBALL="${ROOT_DIR}/dist/${ARCHIVE}.tar.gz"
 
 # ── Step 1: Build package ──
@@ -71,7 +71,7 @@ class WeknoraLiteTest < Formula
   sha256 "${SHA}"
 
   def install
-    libexec.install "WeKnora-lite"
+    libexec.install "mindBuilder-lite"
     pkgshare.install "web" if File.directory?("web")
     pkgshare.install "config" if File.directory?("config")
     pkgshare.install ".env.lite.example"
@@ -112,7 +112,7 @@ class WeknoraLiteTest < Formula
       export WEKNORA_WEB_DIR="\\\${WEKNORA_WEB_DIR:-#{pkgshare}/web}"
 
       cd "\\\$CONFIG_DIR"
-      exec "#{libexec}/WeKnora-lite" "\\\$@"
+      exec "#{libexec}/mindBuilder-lite" "\\\$@"
     SH
   end
 
