@@ -149,7 +149,7 @@ func TestCurrentWorkspaceMembersPaginationAndProjection(t *testing.T) {
 	us := &stubMemberUserService{getByIDs: func(_ context.Context, _ []string) (map[string]*types.User, error) {
 		return map[string]*types.User{"u1": {ID: "u1", Username: "Alice", Email: "a@example.com"}}, nil
 	}}
-	h := NewTenantMemberHandler(ms, us)
+	h := NewTenantMemberHandler(ms, us, nil)
 	r := gin.New()
 	r.Use(middleware.ErrorHandler(), func(c *gin.Context) {
 		c.Request = c.Request.WithContext(

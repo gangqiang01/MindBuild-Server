@@ -100,8 +100,8 @@ func TestOpenPageLinksCheckedTargets(t *testing.T) {
 		},
 		{
 			name: "settings integration",
-			args: `{"page":"settings","section":"integration-chrome"}`,
-			want: map[string]any{"page": "settings", "detail": "Chrome Extension", "section": "integration-chrome"},
+			args: `{"page":"settings","section":"integration-mcpserver"}`,
+			want: map[string]any{"page": "settings", "detail": "MCP Server", "section": "integration-mcpserver"},
 		},
 		{
 			name: "toolbox tool",

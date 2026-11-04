@@ -294,12 +294,14 @@ func buildNewUserEmail(cfg emailConfig, username, password string) (string, stri
 	return subject, b.String()
 }
 
-// notifyCreatedUser attempts the post-creation credential mail.
-// Returns the email_status for the API response plus the failure
-// reason (empty unless failed). Never returns an error that callers
-// should propagate — user creation has already succeeded.
-func (h *SystemHandler) notifyCreatedUser(ctx context.Context, user *types.User, password string) (status, errDetail string) {
-	cfg := resolveEmailConfig(ctx, h.systemSettingSvc)
+// notifyCreatedUserByEmail attempts the post-creation credential mail.
+// Returns the email_status for the API response plus the failure reason
+// (empty unless failed). Never returns an error that callers should
+// propagate — user creation has already succeeded. Shared by
+// SystemHandler (CreateSystemUser) and TenantMemberHandler (CreateMember)
+// so both user-creation paths notify identically.
+func notifyCreatedUserByEmail(ctx context.Context, svc interfaces.SystemSettingService, user *types.User, password string) (status, errDetail string) {
+	cfg := resolveEmailConfig(ctx, svc)
 	logger.Infof(ctx, "[email] notifyCreatedUser: user=%s email=%q hasPassword=%v enabled=%v host=%q port=%d encryption=%q from=%q",
 		user.ID, user.Email, password != "", cfg.Enabled, cfg.Host, cfg.Port, cfg.Encryption, cfg.effectiveFrom())
 	if !cfg.Enabled {
@@ -328,6 +330,13 @@ func (h *SystemHandler) notifyCreatedUser(ctx context.Context, user *types.User,
 	}
 	logger.Infof(ctx, "[email] credential email sent to %s for user %s", user.Email, user.ID)
 	return emailStatusSent, ""
+}
+
+// notifyCreatedUser is the SystemHandler entry point; it delegates to the
+// shared notifyCreatedUserByEmail so CreateSystemUser and CreateMember
+// share one implementation.
+func (h *SystemHandler) notifyCreatedUser(ctx context.Context, user *types.User, password string) (status, errDetail string) {
+	return notifyCreatedUserByEmail(ctx, h.systemSettingSvc, user, password)
 }
 
 // TestEmailRequest is the body for POST /system/admin/email/test.

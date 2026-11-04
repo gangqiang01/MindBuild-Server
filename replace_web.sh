@@ -4,6 +4,6 @@ set -e
 mkdir -p ./frontend
 rm -rf ./frontend/*
 
-scp -r sgq@172.21.73.80:/home/sgq/PROJECT/FRONTEND/Weknora/dist/* ./frontend/
+cp -r /home/sgq/MYPROJECT/FRONTEND/mindBuilder/dist/* ./frontend/
 
 ls -l ./frontend

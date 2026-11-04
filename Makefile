@@ -1,4 +1,4 @@
-.PHONY: help build run test clean docker-build-app docker-build-docreader docker-build-frontend docker-build-all docker-run migrate-up migrate-down docker-restart docker-stop start-all stop-all start-ollama stop-ollama build-images build-images-app build-images-docreader build-images-frontend clean-images check-env list-containers pull-images show-platform dev-start dev-stop dev-restart dev-logs dev-status dev-app dev-frontend docs install-swagger build-lite run-lite package-lite anydoc-lib build-anydoc
+.PHONY: help build run test clean frontend frontend-build frontend-copy docker-build-app docker-build-docreader docker-build-all docker-login docker-push publish docker-run migrate-up migrate-down docker-restart docker-stop start-all stop-all start-ollama stop-ollama clean-images check-env list-containers pull-images show-platform dev-start dev-stop dev-restart dev-logs dev-status dev-app dev-frontend docs install-swagger build-lite run-lite package-lite anydoc-lib build-anydoc
 
 # Show help
 help:
@@ -12,11 +12,19 @@ help:
 	@echo "  build-anydoc      构建带 anydoc 解析引擎的应用"
 	@echo "  clean             清理构建文件"
 	@echo ""
+	@echo "发布 (Harbor: $(DOCKER_IMAGE)):"
+	@echo "  frontend              构建前端并复制到 ./frontend/ (Go server 直接提供 Web 服务，无前端容器)"
+	@echo "  frontend-build        仅编译前端 (npm run build)"
+	@echo "  frontend-copy        仅复制前端产物到 ./frontend/"
+	@echo "  docker-build-app      构建应用镜像 (Go server 同时提供 API 和前端)"
+	@echo "  docker-login          登录 Harbor"
+	@echo "  docker-push           推送应用镜像到 Harbor"
+	@echo "  publish               完整发布: 前端构建+复制 → 镜像构建 → 推送 Harbor"
+	@echo ""
 	@echo "Docker 命令:"
-	@echo "  docker-build-app       构建应用 Docker 镜像 (wechatopenai/weknora-app)"
-	@echo "  docker-build-docreader 构建文档读取器镜像 (wechatopenai/weknora-docreader)"
-	@echo "  docker-build-frontend  构建前端镜像 (wechatopenai/weknora-ui)"
-	@echo "  docker-build-all       构建所有 Docker 镜像"
+	@echo "  docker-build-docreader 构建文档读取器镜像 ($(DOCKER_IMAGE_DOCREADER))"
+	@echo "  docker-build-all       构建所有 Docker 镜像 (app + docreader)"
+	@echo "  clean-images           清理本地旧镜像（含已废弃的 wechatopenai 旧镜像）"
 	@echo "  docker-run            运行 Docker 容器"
 	@echo "  docker-stop           停止 Docker 容器"
 	@echo "  docker-restart        重启 Docker 容器"
@@ -25,13 +33,6 @@ help:
 	@echo "  start-all         启动所有服务"
 	@echo "  stop-all          停止所有服务"
 	@echo "  start-ollama      仅启动 Ollama 服务"
-	@echo ""
-	@echo "镜像构建:"
-	@echo "  build-images      从源码构建所有镜像"
-	@echo "  build-images-app  从源码构建应用镜像"
-	@echo "  build-images-docreader 从源码构建文档读取器镜像"
-	@echo "  build-images-frontend  从源码构建前端镜像"
-	@echo "  clean-images      清理本地镜像"
 	@echo ""
 	@echo "数据库:"
 	@echo "  migrate-up        执行数据库迁移"
@@ -73,12 +74,22 @@ help:
 	@echo "  package-mac-app   构建并打包 macOS 桌面应用 (.app)"
 
 # Go related variables
-BINARY_NAME=WeKnora
+BINARY_NAME=mindBuilder
 MAIN_PATH=./cmd/server
 
 # Docker related variables
-DOCKER_IMAGE=wechatopenai/weknora-app
-DOCKER_TAG=latest
+# 镜像仓库: harbor.arfa.wise-paas.com，Harbor 工程(目录)为 mindbuilder，
+# 与 docker-compose.yml 中 app 服务引用的镜像保持一致。
+DOCKER_HOST=harbor.arfa.wise-paas.com
+DOCKER_IMAGE=$(DOCKER_HOST)/mindbuilder/app
+DOCKER_IMAGE_DOCREADER=$(DOCKER_HOST)/mindbuilder/docreader
+DOCKER_TAG=v1.0.0
+
+# 前端源码在独立仓库，构建产物复制到 ./frontend/，
+# 由 Go server 直接提供 Web 服务（internal/router/static.go），
+# 不再有独立的前端容器。
+FRONTEND_SRC_DIR=/home/sgq/MYPROJECT/FRONTEND/mindBuilder
+FRONTEND_DIST_DIR=$(FRONTEND_SRC_DIR)/dist
 
 # Platform detection
 ifeq ($(shell uname -m),x86_64)
@@ -90,6 +101,42 @@ else ifeq ($(shell uname -m),arm64)
 else
     PLATFORM=linux/amd64
 endif
+
+# ---------------------------------------------------------------------------
+# 前端构建（发布流程第一步）
+# 前端源码在独立仓库 $(FRONTEND_SRC_DIR)，npm run build 产出 dist/，
+# 复制到本仓库 ./frontend/ 后由 Go server 直接提供 Web 服务（无前端容器）。
+# ---------------------------------------------------------------------------
+frontend: frontend-build frontend-copy
+
+frontend-build:
+	@echo ">> 编译前端 ($(FRONTEND_SRC_DIR))..."
+	cd $(FRONTEND_SRC_DIR) && \
+		VITE_FRONTEND_COMMIT=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
+		NODE_OPTIONS="--max-old-space-size=4096" \
+		npm run build
+
+frontend-copy:
+	@test -f $(FRONTEND_DIST_DIR)/index.html || { \
+		echo "错误: $(FRONTEND_DIST_DIR)/index.html 不存在，请先 make frontend-build"; \
+		exit 1; \
+	}
+	@echo ">> 复制前端产物到 ./frontend/ ..."
+	@rm -rf frontend
+	@mkdir -p frontend
+	@cp -r $(FRONTEND_DIST_DIR)/. frontend/
+	@echo ">> 完成，Go server 将直接提供前端 Web 服务"
+
+# Harbor 登录 / 推送
+docker-login:
+	docker login $(DOCKER_HOST)
+
+docker-push:
+	docker push $(DOCKER_IMAGE):$(DOCKER_TAG)
+
+# 完整发布流程：前端构建+复制 → 应用镜像构建 → 推送 Harbor
+publish: frontend docker-build-app docker-push
+	@echo ">> 发布完成: $(DOCKER_IMAGE):$(DOCKER_TAG)"
 
 # Build the application
 build:
@@ -133,8 +180,12 @@ clean:
 	go clean
 	rm -f $(BINARY_NAME)
 
-# Build Docker image
+# Build Docker image (Go server 同时提供 API 和前端，前端产物打进镜像)
 docker-build-app:
+	@test -f frontend/index.html || { \
+		echo "错误: frontend/index.html 不存在 — 先运行 make frontend (编译并复制前端产物)"; \
+		exit 1; \
+	}
 	@echo "获取版本信息..."
 	@eval $$(./scripts/get_version.sh env); \
 	./scripts/get_version.sh info; \
@@ -144,21 +195,17 @@ docker-build-app:
 		--build-arg BUILD_TIME_ARG="$$BUILD_TIME" \
 		--build-arg GO_VERSION_ARG="$$GO_VERSION" \
 		--build-arg WITH_ANYDOC=$${WITH_ANYDOC:-1} \
+		--build-arg GOPROXY_ARG="$${GOPROXY_ARG:-https://goproxy.cn,direct}" \
+		--build-arg GOPRIVATE_ARG="$${GOPRIVATE_ARG:-}" \
+		--build-arg GOSUMDB_ARG="$${GOSUMDB_ARG:-off}" \
 		-f docker/Dockerfile.app -t $(DOCKER_IMAGE):$(DOCKER_TAG) .
 
 # Build docreader Docker image
 docker-build-docreader:
-	docker build --platform $(PLATFORM) -f docker/Dockerfile.docreader -t wechatopenai/weknora-docreader:latest .
-
-# Build frontend Docker image (multi-stage: npm runs inside the builder stage)
-docker-build-frontend:
-	@eval $$(./scripts/get_version.sh env); \
-	docker build --platform $(PLATFORM) \
-		--build-arg VITE_FRONTEND_COMMIT="$$COMMIT_ID" \
-		-f frontend/Dockerfile -t wechatopenai/weknora-ui:latest frontend/
+	docker build --platform $(PLATFORM) -f docker/Dockerfile.docreader -t $(DOCKER_IMAGE_DOCREADER):$(DOCKER_TAG) .
 
 # Build all Docker images
-docker-build-all: docker-build-app docker-build-docreader docker-build-frontend
+docker-build-all: docker-build-app docker-build-docreader
 
 # Run Docker container (传统方式)
 # Touch .env if missing — docker-compose.yml's `env_file: [.env]` is required
@@ -189,19 +236,7 @@ stop-all:
 docker-stop:
 	docker-compose down
 
-# 从源码构建镜像相关命令
-build-images:
-	./scripts/build_images.sh
-
-build-images-app:
-	./scripts/build_images.sh --app
-
-build-images-docreader:
-	./scripts/build_images.sh --docreader
-
-build-images-frontend:
-	./scripts/build_images.sh --frontend
-
+# 清理本地旧镜像（停掉并删除 wechatopenai 时代的旧容器/镜像，一次性迁移用）
 clean-images:
 	./scripts/build_images.sh --clean
 

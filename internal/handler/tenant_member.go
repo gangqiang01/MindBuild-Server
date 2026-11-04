@@ -33,22 +33,26 @@ import (
 // is guaranteed to either match the active tenant or carry a
 // cross-tenant superuser bypass.
 type TenantMemberHandler struct {
-	memberService interfaces.TenantMemberService
-	userService   interfaces.UserService
+	memberService    interfaces.TenantMemberService
+	userService      interfaces.UserService
+	systemSettingSvc interfaces.SystemSettingService
 }
 
 // NewTenantMemberHandler wires the dependencies. PR 1 already provides
 // both services through the dig container; we just consume them. The
 // previous *config.Config argument was removed once
 // middleware.RequirePathTenantMatch took over the cross-tenant
-// superuser carve-out.
+// superuser carve-out. systemSettingSvc drives the best-effort
+// post-creation credential email (see CreateMember).
 func NewTenantMemberHandler(
 	memberService interfaces.TenantMemberService,
 	userService interfaces.UserService,
+	systemSettingSvc interfaces.SystemSettingService,
 ) *TenantMemberHandler {
 	return &TenantMemberHandler{
-		memberService: memberService,
-		userService:   userService,
+		memberService:    memberService,
+		userService:      userService,
+		systemSettingSvc: systemSettingSvc,
 	}
 }
 
@@ -327,6 +331,9 @@ type createMemberResponse struct {
 	Member            types.TenantMemberResponse `json:"member"`
 	UserCreated       bool                       `json:"user_created"`
 	GeneratedPassword string                     `json:"generated_password,omitempty"`
+	// EmailStatus 是创建用户后通知邮件的结果（仅新建用户时返回）：
+	// sent / failed / disabled / not_configured。best-effort，不影响成员创建结果。
+	EmailStatus string `json:"email_status,omitempty"`
 }
 
 // createMemberSuccessResponse is the 201 envelope for POST /tenants/:id/members/create.
@@ -453,6 +460,20 @@ func (h *TenantMemberHandler) CreateMember(c *gin.Context) {
 
 	logger.Infof(ctx, "CreateMember: user %s (created=%v) bound to tenant %d as %s",
 		user.Email, userCreated, tenantID, req.Role)
+
+	// 3) 创建用户成功后 best-effort 发送通知邮件：未配置邮箱服务器或发送失败
+	// 都不影响成员创建结果（管理员仍可通过其他渠道告知）。仅新建用户时发送，
+	// 复用 SystemHandler 的 notifyCreatedUserByEmail 以保持两条路径一致。
+	emailStatus := ""
+	if userCreated {
+		pwd := generatedPassword
+		if pwd == "" && req.Password != nil {
+			pwd = *req.Password
+		}
+		status, _ := notifyCreatedUserByEmail(ctx, h.systemSettingSvc, user, pwd)
+		emailStatus = status
+	}
+
 	c.JSON(http.StatusCreated, createMemberSuccessResponse{
 		Success: true,
 		Data: createMemberResponse{
@@ -468,6 +489,7 @@ func (h *TenantMemberHandler) CreateMember(c *gin.Context) {
 			},
 			UserCreated:       userCreated,
 			GeneratedPassword: generatedPassword,
+			EmailStatus:       emailStatus,
 		},
 	})
 }

@@ -55,36 +55,36 @@ type openPageSection struct{ zh, en string }
 // SettingsSections are the settings dialog's sections, keyed as the client's
 // navigation keys them, with the names it shows.
 var SettingsSections = map[string]openPageSection{
-	"general":               {"常规设置", "General Settings"},
-	"userprofile":           {"用户信息", "User Profile"},
-	"assistant":             {"助手", "Assistant"},
-	"mymemory":              {"我的记忆", "My memory"},
-	"envvars":               {"沙箱密钥", "Sandbox secrets"},
-	"tenant":                {"空间信息", "Workspace Info"},
-	"members":               {"成员管理", "Members"},
-	"chathistory":           {"消息管理", "Message Management"},
-	"memory":                {"长期记忆", "Long-term memory"},
-	"models":                {"模型管理", "Model Management"},
-	"ollama":                {"Ollama", "Ollama"},
-	"weknoracloud":          {"WeKnora Cloud", "WeKnora Cloud"},
-	"websearch":             {"网络搜索", "Web Search"},
-	"vectorstore":           {"向量数据库引擎", "Vector DB Engine"},
-	"parser":                {"解析引擎", "Parser Engine"},
-	"storage":               {"存储引擎", "Storage Engine"},
-	"sandbox":               {"沙箱配置", "Sandbox Config"},
-	"system":                {"版本信息", "Version Info"},
-	"system-global":         {"系统设置", "System Settings"},
-	"model-catalog":         {"模型目录", "Model catalog"},
-	"runtime-queues":        {"任务队列", "Task Queues"},
-	"platform-api-keys":     {"平台 API Key", "Platform API Keys"},
-	"system-audit-log":      {"审计日志", "Audit log"},
-	"integration-im":        {"IM 集成", "IM Integration"},
-	"integration-embed":     {"网页嵌入", "Web Embed"},
-	"integration-api":       {"API 集成", "API Integration"},
+	"general":     {"常规设置", "General Settings"},
+	"userprofile": {"用户信息", "User Profile"},
+	"assistant":   {"助手", "Assistant"},
+	// "mymemory":    {"我的记忆", "My memory"},
+	"envvars":     {"沙箱密钥", "Sandbox secrets"},
+	"tenant":      {"空间信息", "Workspace Info"},
+	"members":     {"成员管理", "Members"},
+	"chathistory": {"消息管理", "Message Management"},
+	"memory":      {"长期记忆", "Long-term memory"},
+	// "models":      {"模型管理", "Model Management"},
+	// "ollama":      {"Ollama", "Ollama"},
+	// "weknoracloud":   {"WeKnora Cloud", "WeKnora Cloud"},
+	// "websearch":         {"网络搜索", "Web Search"},
+	"vectorstore":   {"向量数据库引擎", "Vector DB Engine"},
+	"parser":        {"解析引擎", "Parser Engine"},
+	"storage":       {"存储引擎", "Storage Engine"},
+	"sandbox":       {"沙箱配置", "Sandbox Config"},
+	"system":        {"版本信息", "Version Info"},
+	"system-global": {"系统设置", "System Settings"},
+	// "model-catalog":     {"模型目录", "Model catalog"},
+	"runtime-queues": {"任务队列", "Task Queues"},
+	// "platform-api-keys": {"平台 API Key", "Platform API Keys"},
+	"system-audit-log":  {"审计日志", "Audit log"},
+	"integration-im":    {"IM 集成", "IM Integration"},
+	"integration-embed": {"网页嵌入", "Web Embed"},
+	// "integration-api":       {"API 集成", "API Integration"},
 	"integration-mcpserver": {"MCP Server", "MCP Server"},
-	"integration-cli":       {"CLI", "CLI"},
-	"integration-chrome":    {"Chrome 插件", "Chrome Extension"},
-	"integration-claw":      {"Claw Skill", "Claw Skill"},
+	// "integration-cli":       {"CLI", "CLI"},
+	// "integration-chrome":    {"Chrome 插件", "Chrome Extension"},
+	// "integration-claw":      {"Claw Skill", "Claw Skill"},
 }
 
 // SystemSettingsPanels are the tabs inside settings section system-global.
@@ -205,11 +205,11 @@ const openPageSchema = `{
       "description": "The part of the page to open. ` +
 	`agent_editor: basic, prompts, model, multimodal, conversation, suggestions, tools, mcp, skills, ` +
 	`knowledge, websearch, retrieval, share. ` +
-	`settings: general (personal preferences: language, theme, font), userprofile, assistant, mymemory, ` +
-	`envvars, tenant, members, chathistory, memory, models, ollama, weknoracloud, websearch, vectorstore, ` +
-	`parser, storage, sandbox, system (version), system-global, model-catalog, runtime-queues, ` +
-	`platform-api-keys, system-audit-log, integration-im, integration-embed, integration-api, ` +
-	`integration-mcpserver, integration-cli, integration-chrome, integration-claw; ` +
+	`settings: general (personal preferences: language, theme, font), userprofile, assistant, ` +
+	`envvars, tenant, members, chathistory, memory, vectorstore, ` +
+	`parser, storage, sandbox, system (version), system-global, runtime-queues, ` +
+	`system-audit-log, integration-im, integration-embed, ` +
+	`integration-mcpserver; ` +
 	`a section the user may not see opens their first one. toolbox: skills, mcp, browserconnection."
     },
     "panel": {

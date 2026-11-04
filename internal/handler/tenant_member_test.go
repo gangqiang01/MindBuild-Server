@@ -126,7 +126,7 @@ func (s *stubMemberUserService) GetUsersByIDs(ctx context.Context, ids []string)
 // middleware via memberTestRouter rather than threading a cfg through
 // the handler.
 func newTestMemberHandler(ms interfaces.TenantMemberService, us interfaces.UserService) *TenantMemberHandler {
-	return NewTenantMemberHandler(ms, us)
+	return NewTenantMemberHandler(ms, us, nil)
 }
 
 // memberTestRouter wires the handler with the same errorCapture middleware
@@ -685,7 +685,7 @@ func TestTenantMember_SuperuserBypassRequiresFeatureFlag(t *testing.T) {
 	// Build the router with the flag explicitly off — the carve-out
 	// now lives in middleware.RequirePathTenantMatch, which the router
 	// helper mounts.
-	h := NewTenantMemberHandler(ms, &stubMemberUserService{})
+	h := NewTenantMemberHandler(ms, &stubMemberUserService{}, nil)
 	router := memberTestRouterWithCfg(h, &config.Config{
 		Tenant: &config.TenantConfig{EnableCrossTenantAccess: false},
 	})
