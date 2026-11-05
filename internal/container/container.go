@@ -70,6 +70,7 @@ import (
 	gitlabConnector "github.com/Tencent/WeKnora/internal/datasource/connector/gitlab"
 	imaConnector "github.com/Tencent/WeKnora/internal/datasource/connector/ima"
 	notionConnector "github.com/Tencent/WeKnora/internal/datasource/connector/notion"
+	redmineConnector "github.com/Tencent/WeKnora/internal/datasource/connector/redmine"
 	rssConnector "github.com/Tencent/WeKnora/internal/datasource/connector/rss"
 	seafileConnector "github.com/Tencent/WeKnora/internal/datasource/connector/seafile"
 	yuqueConnector "github.com/Tencent/WeKnora/internal/datasource/connector/yuque"
@@ -2114,6 +2115,9 @@ func initConnectorRegistry() (*datasource.ConnectorRegistry, error) {
 	}
 	if err := registry.Register(seafileConnector.NewConnector()); err != nil {
 		errs = errors.Join(errs, fmt.Errorf("register seafile connector: %w", err))
+	}
+	if err := registry.Register(redmineConnector.NewConnector()); err != nil {
+		errs = errors.Join(errs, fmt.Errorf("register redmine connector: %w", err))
 	}
 
 	// Future connectors will be registered here:

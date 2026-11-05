@@ -348,6 +348,10 @@ func RegisterDataSourceRoutes(
 		// Sync logs — Viewer+ (read-only audit trail)
 		ds.GET("/:id/logs", g.Viewer(), handler.GetSyncLogs)
 		ds.GET("/logs/:log_id", g.Viewer(), handler.GetSyncLog)
+		// Sync log management — Admin+ (history cleanup). Running logs are
+		// preserved so an in-flight sync is never orphaned.
+		ds.DELETE("/logs/:log_id", g.Admin(), handler.DeleteSyncLog)
+		ds.DELETE("/:id/logs", g.Admin(), handler.ClearSyncLogs)
 	}
 }
 

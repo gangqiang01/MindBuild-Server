@@ -77,6 +77,12 @@ type DataSourceService interface {
 	// GetSyncLog retrieves a specific sync log entry
 	GetSyncLog(ctx context.Context, syncLogID string) (*types.SyncLog, error)
 
+	// DeleteSyncLog removes a single sync log entry (history cleanup).
+	DeleteSyncLog(ctx context.Context, syncLogID string) error
+
+	// ClearSyncLogs removes every terminal sync log for a data source.
+	ClearSyncLogs(ctx context.Context, dsID string) error
+
 	// ProcessSync handles the actual sync operation (called by asynq task)
 	ProcessSync(ctx context.Context, task *asynq.Task) error
 }
@@ -139,4 +145,14 @@ type SyncLogRepository interface {
 	// Failed logs of live sources are retained because they may be awaiting retry.
 	// defaultRetentionDays applies to missing sources and unset policies.
 	CleanupOldLogs(ctx context.Context, defaultRetentionDays int) error
+
+	// DeleteByID removes a single sync log entry (user-initiated history
+	// cleanup). A running sync's log is never deleted this way: orphaning an
+	// in-flight sync would leave it updating a log the user believes gone.
+	DeleteByID(ctx context.Context, id string) error
+
+	// DeleteByDataSource removes every terminal sync log for a data source —
+	// the "clear history" action. Running logs are preserved for the same
+	// reason as DeleteByID.
+	DeleteByDataSource(ctx context.Context, dsID string) error
 }

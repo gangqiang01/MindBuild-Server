@@ -173,3 +173,63 @@ func TestEffectiveFromFallsBackToUsername(t *testing.T) {
 		t.Fatalf("effectiveFrom should fall back to username, got %q", cfg.effectiveFrom())
 	}
 }
+
+// TestLoginURLDerivation pins the rule that the credential mail links to
+// the /login page, not the bare site origin — the whole point of the mail
+// is one-click sign-in. Cases: empty (omit), bare origin (append /login),
+// trailing slash (collapse then append), already-/login (no doubling),
+// and uppercase /Login (treated as already-login).
+func TestLoginURLDerivation(t *testing.T) {
+	cases := []struct {
+		name string
+		site string
+		want string
+	}{
+		{"empty", "", ""},
+		{"bare origin", "https://mindbuilder.example.com", "https://mindbuilder.example.com/login"},
+		{"trailing slash", "https://mindbuilder.example.com/", "https://mindbuilder.example.com/login"},
+		{"already login", "https://mindbuilder.example.com/login", "https://mindbuilder.example.com/login"},
+		{"already login trailing slash", "https://mindbuilder.example.com/login/", "https://mindbuilder.example.com/login"},
+		{"uppercase login suffix", "https://mindbuilder.example.com/Login", "https://mindbuilder.example.com/Login"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := emailConfig{SiteURL: tc.site}.loginURL()
+			if got != tc.want {
+				t.Fatalf("loginURL(%q) = %q, want %q", tc.site, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBuildNewUserEmailIncludesLoginURL asserts the rendered body carries
+// a /login link the recipient can click straight into, and that the bare
+// origin never leaks through (which would dump them on the landing page).
+func TestBuildNewUserEmailIncludesLoginURL(t *testing.T) {
+	_, body := buildNewUserEmail(
+		emailConfig{SiteURL: "https://mindbuilder.example.com"},
+		"alice", "PlainPass9",
+	)
+	if !strings.Contains(body, "登录地址：https://mindbuilder.example.com/login") {
+		t.Fatalf("body must link to the /login page, got:\n%s", body)
+	}
+	// The bare origin (without /login) must not appear as the login link —
+	// that was the pre-fix behaviour that dropped users on the landing page.
+	if strings.Contains(body, "登录地址：https://mindbuilder.example.com\r\n") {
+		t.Fatalf("bare origin leaked as login link, got:\n%s", body)
+	}
+	if !strings.Contains(body, "用户名：alice") || !strings.Contains(body, "初始密码：PlainPass9") {
+		t.Fatalf("credentials missing from body, got:\n%s", body)
+	}
+}
+
+// TestBuildNewUserEmailOmitsLoginLineWhenUnconfigured guards the contract
+// that an unconfigured site_url omits the line rather than emitting an
+// empty "登录地址：" label — guessing the origin from an internal Host
+// would be wrong behind a proxy.
+func TestBuildNewUserEmailOmitsLoginLineWhenUnconfigured(t *testing.T) {
+	_, body := buildNewUserEmail(emailConfig{}, "alice", "PlainPass9")
+	if strings.Contains(body, "登录地址") {
+		t.Fatalf("login line must be omitted when site_url is empty, got:\n%s", body)
+	}
+}

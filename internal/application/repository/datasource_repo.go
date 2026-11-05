@@ -369,6 +369,23 @@ func (r *SyncLogRepository) CleanupOldLogs(ctx context.Context, defaultRetention
 	return nil
 }
 
+// DeleteByID removes a single sync log unless it belongs to a running sync.
+// SyncLog has no soft-delete column, so this is a hard delete (the same as
+// CleanupOldLogs uses). The status guard prevents orphaning an in-flight sync.
+func (r *SyncLogRepository) DeleteByID(ctx context.Context, id string) error {
+	return r.db.WithContext(ctx).
+		Where("id = ? AND status <> ?", id, types.SyncLogStatusRunning).
+		Delete(&types.SyncLog{}).Error
+}
+
+// DeleteByDataSource clears a data source's terminal sync history, preserving
+// any running sync log so an in-flight sync keeps a log to update.
+func (r *SyncLogRepository) DeleteByDataSource(ctx context.Context, dsID string) error {
+	return r.db.WithContext(ctx).
+		Where("data_source_id = ? AND status <> ?", dsID, types.SyncLogStatusRunning).
+		Delete(&types.SyncLog{}).Error
+}
+
 // PatchSyncSettings never writes runtime state or fields omitted by the request.
 func (r *DataSourceRepository) PatchSyncSettings(
 	ctx context.Context, ds *types.DataSource, expectedConfig types.JSON, fields []string,

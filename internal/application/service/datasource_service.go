@@ -625,6 +625,19 @@ func (s *DataSourceService) GetSyncLog(ctx context.Context, syncLogID string) (*
 	return log, nil
 }
 
+// DeleteSyncLog removes a single sync log entry. The caller (handler) is
+// responsible for the ownership check; the repo guards against deleting a
+// running sync's log.
+func (s *DataSourceService) DeleteSyncLog(ctx context.Context, syncLogID string) error {
+	return s.syncLogRepo.DeleteByID(ctx, syncLogID)
+}
+
+// ClearSyncLogs removes every terminal sync log for a data source. Used by the
+// "clear history" action; running logs are preserved.
+func (s *DataSourceService) ClearSyncLogs(ctx context.Context, dsID string) error {
+	return s.syncLogRepo.DeleteByDataSource(ctx, dsID)
+}
+
 // ProcessSync handles the actual sync operation (called by asynq task)
 func (s *DataSourceService) ProcessSync(ctx context.Context, task *asynq.Task) error {
 	var payload types.DataSourceSyncPayload

@@ -181,7 +181,9 @@ func (r *processSyncSyncLogRepo) UpdateResult(_ context.Context, log *types.Sync
 func (r *processSyncSyncLogRepo) CancelPendingByDataSource(context.Context, string) error {
 	return nil
 }
-func (r *processSyncSyncLogRepo) CleanupOldLogs(context.Context, int) error { return nil }
+func (r *processSyncSyncLogRepo) CleanupOldLogs(context.Context, int) error            { return nil }
+func (r *processSyncSyncLogRepo) DeleteByID(_ context.Context, _ string) error         { return nil }
+func (r *processSyncSyncLogRepo) DeleteByDataSource(_ context.Context, _ string) error { return nil }
 
 func TestAllFetchedItemsFailedError(t *testing.T) {
 	err := allFetchedItemsFailedError(&types.SyncResult{

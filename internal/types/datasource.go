@@ -43,6 +43,9 @@ const (
 	ConnectorTypeGitLab      = "gitlab"
 	ConnectorTypeIMA         = "ima"
 	ConnectorTypeSeafile     = "seafile"
+	// ConnectorTypeRedmine is a self-hosted Redmine instance synced over its
+	// REST API (issues with journals + wiki pages). Auth is an API key.
+	ConnectorTypeRedmine = "redmine"
 
 	// Sync modes
 	SyncModeIncremental = "incremental"

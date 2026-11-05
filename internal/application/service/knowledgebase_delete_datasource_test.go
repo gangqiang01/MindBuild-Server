@@ -108,7 +108,9 @@ func (r *kbDeleteSyncLogRepo) CancelPendingByDataSource(_ context.Context, dsID 
 	r.canceled = append(r.canceled, dsID)
 	return nil
 }
-func (r *kbDeleteSyncLogRepo) CleanupOldLogs(_ context.Context, _ int) error { return nil }
+func (r *kbDeleteSyncLogRepo) CleanupOldLogs(_ context.Context, _ int) error        { return nil }
+func (r *kbDeleteSyncLogRepo) DeleteByID(_ context.Context, _ string) error         { return nil }
+func (r *kbDeleteSyncLogRepo) DeleteByDataSource(_ context.Context, _ string) error { return nil }
 
 var _ interfaces.SyncLogRepository = (*kbDeleteSyncLogRepo)(nil)
 

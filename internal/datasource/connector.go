@@ -318,6 +318,14 @@ var ConnectorMetadataRegistry = map[string]ConnectorMetadata{
 		AuthType:     "token",
 		Capabilities: []string{"incremental", "hierarchical", "deletion_sync"},
 	},
+	types.ConnectorTypeRedmine: {
+		Type:         types.ConnectorTypeRedmine,
+		Name:         "Redmine",
+		Description:  "Sync issues (with comments) and wiki pages from a self-hosted Redmine",
+		Priority:     14,
+		AuthType:     "api_key",
+		Capabilities: []string{"incremental", "hierarchical"},
+	},
 }
 
 // ListAvailableConnectors returns all available connector metadata

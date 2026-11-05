@@ -91,6 +91,28 @@ func (c emailConfig) effectiveFrom() string {
 	return c.Username
 }
 
+// loginURL derives the URL a freshly created user should follow to reach
+// the sign-in page directly. The email.site_url setting is a bare origin
+// (e.g. "https://mindbuilder.example.com") — emitting it verbatim drops the
+// recipient on the public landing page and forces them to hunt for the
+// login entry. Appending the frontend's /login route lets them sign in
+// straight away, which is the whole point of the credential mail.
+//
+// Returns "" when no site_url is configured, in which case the mail omits
+// the line (we won't guess the deployment's public origin from an internal
+// request Host behind a proxy). An admin who already pointed site_url at
+// the login page gets it through unchanged rather than doubled.
+func (c emailConfig) loginURL() string {
+	base := strings.TrimRight(c.SiteURL, "/")
+	if base == "" {
+		return ""
+	}
+	if strings.HasSuffix(strings.ToLower(base), "/login") {
+		return base
+	}
+	return base + "/login"
+}
+
 // buildMailMessage assembles an RFC 5322 message with UTF-8 headers and a
 // base64 body. Base64 sidesteps dot-stuffing and the 998-byte line limit;
 // the subject is RFC 2047 B-encoded because raw UTF-8 in headers is only
@@ -286,8 +308,10 @@ func buildNewUserEmail(cfg emailConfig, username, password string) (string, stri
 	b.WriteString("管理员刚刚为你创建了 MindBuilder 账号，以下是你的登录信息：\r\n\r\n")
 	b.WriteString("  用户名：" + username + "\r\n")
 	b.WriteString("  初始密码：" + password + "\r\n\r\n")
-	if cfg.SiteURL != "" {
-		b.WriteString("登录地址：" + cfg.SiteURL + "\r\n\r\n")
+	// loginURL points at the sign-in page (/login), not just the site
+	// origin, so the recipient can click through and log in directly.
+	if link := cfg.loginURL(); link != "" {
+		b.WriteString("登录地址：" + link + "\r\n\r\n")
 	}
 	b.WriteString("为了账号安全，请登录后尽快修改密码。\r\n\r\n")
 	b.WriteString("（本邮件由系统自动发送，请勿回复。）\r\n")

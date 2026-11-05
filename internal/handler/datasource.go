@@ -627,6 +627,76 @@ func (h *DataSourceHandler) GetSyncLog(c *gin.Context) {
 	c.JSON(http.StatusOK, log)
 }
 
+// DeleteSyncLog godoc
+// @Summary Delete a sync log entry
+// @Description Remove a single sync log entry (history cleanup). A running sync's log is preserved.
+// @Tags DataSource
+// @Produce json
+// @Param log_id path string true "Sync log ID" extensions(x-agent=sync_log_id)
+// @Success 200 {object} map[string]string
+// @Failure 404 {object} map[string]string
+// @x-agent {"id":"data_source.delete_sync_log","risk":"write"}
+// @Router /datasource/logs/{log_id} [delete]
+func (h *DataSourceHandler) DeleteSyncLog(c *gin.Context) {
+	ctx := c.Request.Context()
+	tenantID := h.getTenantID(c)
+	if tenantID == 0 {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	logID := c.Param("log_id")
+	log, err := h.service.GetSyncLog(ctx, logID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "sync log not found"})
+		return
+	}
+
+	// Ownership goes through the log's data source (and its knowledge base),
+	// mirroring GetSyncLog so a user can only delete logs for sources they own.
+	if _, status, msg := h.getOwnedDataSource(ctx, tenantID, log.DataSourceID); status != http.StatusOK {
+		c.JSON(status, gin.H{"error": msg})
+		return
+	}
+
+	if err := h.service.DeleteSyncLog(ctx, logID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete sync log"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// ClearSyncLogs godoc
+// @Summary Clear sync history for a data source
+// @Description Remove every terminal sync log for a data source (running logs preserved).
+// @Tags DataSource
+// @Produce json
+// @Param id path string true "Data source ID"
+// @Success 200 {object} map[string]string
+// @Failure 404 {object} map[string]string
+// @x-agent {"id":"data_source.clear_sync_logs","risk":"write"}
+// @Router /datasource/{id}/logs [delete]
+func (h *DataSourceHandler) ClearSyncLogs(c *gin.Context) {
+	ctx := c.Request.Context()
+	tenantID := h.getTenantID(c)
+	if tenantID == 0 {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	id := c.Param("id")
+	if _, status, msg := h.getOwnedDataSource(ctx, tenantID, id); status != http.StatusOK {
+		c.JSON(status, gin.H{"error": msg})
+		return
+	}
+
+	if err := h.service.ClearSyncLogs(ctx, id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to clear sync logs"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
 // GetAvailableConnectors godoc
 // @Summary Get available connectors
 // @Description Get list of available data source connectors
