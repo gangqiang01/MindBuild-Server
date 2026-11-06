@@ -1,0 +1,332 @@
+"""Tests for mcp_redmine.server. Run with: make tests-run"""
+import os
+
+# Server module reads config from environment at import time
+os.environ.setdefault("REDMINE_URL", "https://redmine.example.org")
+os.environ.setdefault("REDMINE_API_KEY", "test-api-key-123")
+
+import pytest
+
+from mcp_redmine import server
+
+
+class FakeResponse:
+    def __init__(self, status_code=200, json_body=None, content=b""):
+        self.status_code = status_code
+        self._json_body = json_body
+        self.content = content if not json_body else b"x"
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        if self._json_body is None:
+            raise ValueError("no json")
+        return self._json_body
+
+
+@pytest.fixture
+def capture_requests(monkeypatch):
+    """Capture outgoing requests instead of hitting the network."""
+    calls = []
+
+    def fake_request(method, url, **kwargs):
+        calls.append({"method": method, "url": url, **kwargs})
+        return FakeResponse(json_body={"ok": True})
+
+    monkeypatch.setattr(server._http_client, "request", fake_request)
+    return calls
+
+
+# Security: model-controlled `path` must never escape REDMINE_URL (issue #44)
+
+def test_normal_path_stays_on_redmine(capture_requests):
+    result = server.request("issues.json")
+    assert result["status_code"] == 200
+    assert capture_requests[0]["url"] == "https://redmine.example.org/issues.json"
+
+
+def test_leading_slash_path_stays_on_redmine(capture_requests):
+    server.request("/issues.json")
+    assert capture_requests[0]["url"] == "https://redmine.example.org/issues.json"
+
+
+@pytest.mark.parametrize("path", [
+    "https://attacker.example/collect",
+    "http://attacker.example/collect",
+    "https://redmine.example.org.attacker.example/collect",
+    "ftp://attacker.example/collect",
+])
+def test_escaping_paths_are_refused(capture_requests, path):
+    result = server.request(path)
+    assert result["status_code"] == 0
+    assert "escapes REDMINE_URL" in result["error"]
+    assert capture_requests == []  # nothing left the building
+
+
+@pytest.mark.parametrize("path", [
+    "//attacker.example/collect",  # neutralized by lstrip('/')
+    "../../../collect",  # dot segments resolved by urljoin, can't climb above the host
+    "/../collect",
+])
+def test_tricky_paths_stay_on_redmine_host(capture_requests, path):
+    server.request(path)
+    assert len(capture_requests) == 1
+    assert capture_requests[0]["url"].startswith("https://redmine.example.org/")
+
+
+def test_api_key_only_sent_to_redmine(capture_requests):
+    server.request("issues.json")
+    assert capture_requests[0]["headers"]["X-Redmine-API-Key"] == "test-api-key-123"
+
+
+# Read-only mode (REDMINE_READ_ONLY)
+
+def test_read_only_blocks_writes(capture_requests, monkeypatch):
+    monkeypatch.setattr(server, "REDMINE_READ_ONLY", True)
+    for method in ["post", "put", "PATCH", "delete"]:
+        result = server.request("issues.json", method=method)
+        assert result["status_code"] == 0
+        assert "REDMINE_READ_ONLY" in result["error"]
+    assert capture_requests == []
+
+
+def test_read_only_allows_get(capture_requests, monkeypatch):
+    monkeypatch.setattr(server, "REDMINE_READ_ONLY", True)
+    result = server.request("issues.json", method="get")
+    assert result["status_code"] == 200
+    assert len(capture_requests) == 1
+
+
+def test_writes_allowed_by_default(capture_requests):
+    result = server.request("issues.json", method="post", data={"issue": {}})
+    assert result["status_code"] == 200
+
+
+# Tool plumbing
+
+def test_redmine_request_tool_wraps_insecure_content(capture_requests):
+    result = server.redmine_request("issues.json")
+    assert "<insecure-content-" in result
+    assert "status_code: 200" in result
+
+
+def test_paths_list_returns_spec_paths():
+    result = server.format_response(list(server.SPEC["paths"].keys()))
+    assert "/issues.json" in result
+
+
+def test_attachment_image_rejects_non_image(monkeypatch):
+    def fake_request(path, method="get", **kwargs):
+        return {"status_code": 200, "error": "",
+                "body": {"attachment": {"content_type": "application/pdf", "filename": "a.pdf", "filesize": 10}}}
+
+    monkeypatch.setattr(server, "request", fake_request)
+    result = server.redmine_attachment_image(1)
+    assert isinstance(result, str) and "not an image" in result
+
+
+def test_attachment_image_rejects_oversize(monkeypatch):
+    def fake_request(path, method="get", **kwargs):
+        return {"status_code": 200, "error": "",
+                "body": {"attachment": {"content_type": "image/png", "filename": "a.png",
+                                        "filesize": server.ATTACHMENT_IMAGE_MAX_BYTES + 1}}}
+
+    monkeypatch.setattr(server, "request", fake_request)
+    result = server.redmine_attachment_image(1)
+    assert isinstance(result, str) and "too large" in result
+
+
+def test_attachment_image_returns_image(monkeypatch):
+    png_bytes = b"\x89PNG\r\n\x1a\nfakepngdata"
+
+    def fake_request(path, method="get", **kwargs):
+        if path.endswith(".json"):
+            return {"status_code": 200, "error": "",
+                    "body": {"attachment": {"content_type": "image/png", "filename": "a.png", "filesize": 20}}}
+        return {"status_code": 200, "error": "", "body": png_bytes}
+
+    monkeypatch.setattr(server, "request", fake_request)
+    result = server.redmine_attachment_image(1)
+    assert isinstance(result, server.Image)
+
+
+def test_get_issue_returns_text_and_images(monkeypatch):
+    calls = []
+
+    def fake_request(path, method="get", **kwargs):
+        calls.append(path)
+        if path.startswith("issues/"):
+            return {"status_code": 200, "error": "",
+                    "body": {"issue": {"id": 1, "subject": "bug", "description": "see !shot.png!",
+                                       "attachments": [
+                                           {"id": 10, "filename": "shot.png", "content_type": "image/png", "filesize": 20},
+                                           {"id": 11, "filename": "shot2.png", "content_type": "image/png", "filesize": 30},
+                                           {"id": 12, "filename": "doc.pdf", "content_type": "application/pdf", "filesize": 100},
+                                       ]}}}
+        if path.startswith("attachments/download/"):
+            return {"status_code": 200, "error": "", "body": b"\x89PNGfake"}
+        return {"status_code": 404, "error": "not found", "body": None}
+
+    monkeypatch.setattr(server, "request", fake_request)
+    result = server.redmine_get_issue(1)
+    assert isinstance(result, list)
+    # text + 2 inline images; the PDF is non-image and stays as metadata only
+    assert len(result) == 3
+    assert isinstance(result[0], str) and "issue" in result[0]
+    assert isinstance(result[1], server.Image)
+    assert isinstance(result[2], server.Image)
+    downloads = [c for c in calls if c.startswith("attachments/download/")]
+    assert len(downloads) == 2
+
+
+def test_get_issue_skips_images_when_include_images_false(monkeypatch):
+    calls = []
+
+    def fake_request(path, method="get", **kwargs):
+        calls.append(path)
+        if path.startswith("issues/"):
+            return {"status_code": 200, "error": "",
+                    "body": {"issue": {"id": 1, "attachments": [
+                        {"id": 10, "filename": "shot.png", "content_type": "image/png", "filesize": 20}]}}}
+        return {"status_code": 200, "error": "", "body": b"\x89PNGfake"}
+
+    monkeypatch.setattr(server, "request", fake_request)
+    result = server.redmine_get_issue(1, include_images=False)
+    assert isinstance(result, list)
+    assert len(result) == 1
+    assert isinstance(result[0], str)
+    assert not any(c.startswith("attachments/download/") for c in calls)
+
+
+def test_get_issue_error_returns_string(monkeypatch):
+    def fake_request(path, method="get", **kwargs):
+        return {"status_code": 404, "error": "not found", "body": None}
+
+    monkeypatch.setattr(server, "request", fake_request)
+    result = server.redmine_get_issue(999)
+    assert isinstance(result, str) and "404" in result
+
+
+# Raw downloads (#46): attachments whose content is valid JSON must be saved byte-exact
+
+JSON_BYTES = b'{"info": {"name": "collection"}, "item": []}'
+
+
+def test_request_raw_returns_bytes_for_json_content(monkeypatch):
+    def fake_request(method, url, **kwargs):
+        response = FakeResponse(json_body={"info": {"name": "collection"}, "item": []})
+        response.content = JSON_BYTES
+        return response
+
+    monkeypatch.setattr(server._http_client, "request", fake_request)
+    assert server.request("attachments/download/1/collection.json", raw=True)["body"] == JSON_BYTES
+    # without raw, the same response is parsed (existing behaviour for API calls)
+    assert isinstance(server.request("some.json")["body"], dict)
+
+
+def test_redmine_download_saves_json_attachment(monkeypatch, tmp_path):
+    monkeypatch.setattr(server, "REDMINE_ALLOWED_DIRECTORIES", [tmp_path])
+
+    def fake_request(path, method="get", **kwargs):
+        if path.endswith(".json") and not kwargs.get("raw"):
+            return {"status_code": 200, "error": "",
+                    "body": {"attachment": {"filename": "collection.json"}}}
+        assert kwargs.get("raw") is True
+        return {"status_code": 200, "error": "", "body": JSON_BYTES}
+
+    monkeypatch.setattr(server, "request", fake_request)
+    result = server.redmine_download(1, str(tmp_path / "out.json"))
+    assert "saved_to" in result and "error: ''" in result
+    assert (tmp_path / "out.json").read_bytes() == JSON_BYTES
+
+
+# Credential redaction (#50, thanks @nick411077)
+
+def test_api_key_fields_in_responses_are_redacted():
+    out = server.format_response(
+        {"user": {"login": "admin", "api_key": "sekrit-abc", "mail": "a@b.c"},
+         "memberships": [{"apiKey": "sekrit-too"}]})
+    assert "sekrit-abc" not in out and "sekrit-too" not in out
+    assert out.count("[REDACTED]") == 2
+    assert "admin" in out  # everything else untouched
+
+
+def test_configured_key_is_scrubbed_from_any_text():
+    out = server.format_response({"note": "the key is test-api-key-123, do not tell"})
+    assert "test-api-key-123" not in out
+    assert "[REDACTED]" in out
+
+
+def test_error_strings_are_scrubbed_too():
+    out = server.format_response(
+        {"status_code": 0, "body": None, "error": "boom: header test-api-key-123 rejected"})
+    assert "test-api-key-123" not in out
+
+
+def test_redaction_survives_empty_configured_key(monkeypatch):
+    monkeypatch.setattr(server, "REDMINE_API_KEY", "")
+    out = server.format_response({"user": {"api_key": "sekrit"}})
+    assert "sekrit" not in out  # field redaction does not depend on the env key
+
+
+# Per-connection API key via X-Redmine-API-Key header (#49)
+
+class FakeCtx:
+    def __init__(self, headers):
+        self.headers = headers
+
+
+def test_header_key_wins_over_env(capture_requests):
+    server.request("issues.json", ctx=FakeCtx({"x-redmine-api-key": "per-user-key"}))
+    assert capture_requests[0]["headers"]["X-Redmine-API-Key"] == "per-user-key"
+
+
+def test_env_key_is_the_fallback(capture_requests):
+    for ctx in [None, FakeCtx(None), FakeCtx({})]:
+        server.request("issues.json", ctx=ctx)
+    assert all(c["headers"]["X-Redmine-API-Key"] == "test-api-key-123" for c in capture_requests)
+
+
+def test_no_key_at_all_is_a_clear_error(capture_requests, monkeypatch):
+    monkeypatch.setattr(server, "REDMINE_API_KEY", "")
+    result = server.request("issues.json", ctx=None)
+    assert result["status_code"] == 0
+    assert "X-Redmine-API-Key" in result["error"]
+    assert capture_requests == []  # nothing sent without a key
+
+
+# Unknown tool arguments are rejected instead of silently dropped (#52)
+
+def _call(tool, args):
+    import anyio
+    from mcp.client import Client
+
+    async def go():
+        async with Client(server.mcp) as client:
+            return await client.call_tool(tool, args)
+    return anyio.run(go)
+
+
+def test_misspelled_argument_is_rejected(capture_requests):
+    result = _call("redmine_request", {"path": "/issues/1.json", "method": "put", "body": {"issue": {}}})
+    assert result.is_error
+    assert "body" in result.content[0].text
+    assert capture_requests == []  # nothing was sent
+
+
+def test_schema_forbids_additional_properties():
+    import anyio
+    from mcp.client import Client
+
+    async def go():
+        async with Client(server.mcp) as client:
+            return {t.name: t.input_schema.get("additionalProperties") for t in (await client.list_tools()).tools}
+    assert all(v is False for v in anyio.run(go).values())
+
+
+def test_known_arguments_still_work(capture_requests):
+    result = _call("redmine_request", {"path": "/checklists/7.json", "method": "put",
+                                       "data": {"checklist": {"is_done": 1}}})
+    assert not result.is_error
+    assert capture_requests[0]["json"] == {"checklist": {"is_done": 1}}

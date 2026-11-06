@@ -286,7 +286,9 @@ services:
       # DB host would skip the 5432 port block.)
       # doris-be: Stream Load follows FE→BE redirects that must receive Basic
       # credentials on whitelisted BE hosts.
-      - SSRF_WHITELIST_EXTRA=${SSRF_WHITELIST_EXTRA:-searxng,qdrant,milvus,weaviate,doris-fe,doris-be,minio}
+      # mcp-redmine: managed Redmine MCP template container (compose service
+      # name), reached by template MCP services at http://mcp-redmine:8000/mcp.
+      - SSRF_WHITELIST_EXTRA=${SSRF_WHITELIST_EXTRA:-searxng,qdrant,milvus,weaviate,doris-fe,doris-be,minio,mcp-redmine}
       # 仅允许白名单出站（默认关闭）。开启前请把所有需要访问的地址加入白名单，
       # 见 website-docs/01-getting-started/04-configuration.md「开启 SSRF_DNS_WHITELIST_ONLY 之前」。
       - SSRF_DNS_WHITELIST_ONLY=${SSRF_DNS_WHITELIST_ONLY:-}

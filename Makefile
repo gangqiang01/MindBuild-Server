@@ -1,4 +1,4 @@
-.PHONY: help build run test clean frontend frontend-build frontend-copy docker-build-app docker-build-docreader docker-build-all docker-login docker-push publish docker-run migrate-up migrate-down docker-restart docker-stop start-all stop-all start-ollama stop-ollama clean-images check-env list-containers pull-images show-platform dev-start dev-stop dev-restart dev-logs dev-status dev-app dev-frontend docs install-swagger build-lite run-lite package-lite anydoc-lib build-anydoc
+.PHONY: help build run test clean frontend frontend-build frontend-copy docker-build-app docker-build-docreader docker-build-mcp-redmine docker-build-all docker-login docker-push publish docker-run migrate-up migrate-down docker-restart docker-stop start-all stop-all start-ollama stop-ollama clean-images check-env list-containers pull-images show-platform dev-start dev-stop dev-restart dev-logs dev-status dev-app dev-frontend docs install-swagger build-lite run-lite package-lite anydoc-lib build-anydoc
 
 # Show help
 help:
@@ -23,7 +23,8 @@ help:
 	@echo ""
 	@echo "Docker 命令:"
 	@echo "  docker-build-docreader 构建文档读取器镜像 ($(DOCKER_IMAGE_DOCREADER))"
-	@echo "  docker-build-all       构建所有 Docker 镜像 (app + docreader)"
+	@echo "  docker-build-mcp-redmine 构建 Redmine MCP 镜像 ($(DOCKER_IMAGE_MCP_REDMINE))"
+	@echo "  docker-build-all       构建所有 Docker 镜像 (app + docreader + mcp-redmine)"
 	@echo "  clean-images           清理本地旧镜像（含已废弃的 wechatopenai 旧镜像）"
 	@echo "  docker-run            运行 Docker 容器"
 	@echo "  docker-stop           停止 Docker 容器"
@@ -83,6 +84,7 @@ MAIN_PATH=./cmd/server
 DOCKER_HOST=harbor.arfa.wise-paas.com
 DOCKER_IMAGE=$(DOCKER_HOST)/mindbuilder/app
 DOCKER_IMAGE_DOCREADER=$(DOCKER_HOST)/mindbuilder/docreader
+DOCKER_IMAGE_MCP_REDMINE=$(DOCKER_HOST)/mindbuilder/mcp-redmine
 DOCKER_TAG=v1.0.0
 
 # 前端源码在独立仓库，构建产物复制到 ./frontend/，
@@ -204,8 +206,12 @@ docker-build-app:
 docker-build-docreader:
 	docker build --platform $(PLATFORM) -f docker/Dockerfile.docreader -t $(DOCKER_IMAGE_DOCREADER):$(DOCKER_TAG) .
 
+# Build mcp-redmine Docker image
+docker-build-mcp-redmine:
+	docker build --platform $(PLATFORM) -f docker/Dockerfile.mcp-redmine -t $(DOCKER_IMAGE_MCP_REDMINE):$(DOCKER_TAG) .
+
 # Build all Docker images
-docker-build-all: docker-build-app docker-build-docreader
+docker-build-all: docker-build-app docker-build-docreader docker-build-mcp-redmine
 
 # Run Docker container (传统方式)
 # Touch .env if missing — docker-compose.yml's `env_file: [.env]` is required

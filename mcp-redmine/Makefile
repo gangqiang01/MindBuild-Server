@@ -1,0 +1,63 @@
+SHELL := /bin/bash
+.SHELLFLAGS := -ec
+
+PROJECT := $(shell grep '^name = ' pyproject.toml | cut -d '"' -f2)
+PACKAGE := $(shell echo $(PROJECT) | tr '-' '_')
+# Pass VERSION explicitly to sub-makes: it is timestamp-based, so a re-evaluation
+# in a sub-make would produce a different version than the one committed/tagged.
+VERSION := $(shell date +%Y.%m.%d.%H%M%S)
+
+version-bump:
+	sed -i 's/$(PROJECT)==[0-9.]*"/$(PROJECT)==$(VERSION)"/g' README.md
+	sed -i "s/version = \"[^\"]*\"/version = \"$(VERSION)\"/" pyproject.toml
+	sed -i "s/VERSION = \"[^\"]*\"/VERSION = \"$(VERSION)\"/" $(PACKAGE)/server.py
+
+version-bump-claude-desktop:
+	sed -i "s/$(PROJECT)==[0-9.]*\"/$(PROJECT)==$(VERSION)\"/g" ~/.config/Claude/claude_desktop_config.json
+
+tests-run:
+	uv run --group dev python -m pytest tests/ -q
+
+publish-test:
+	rm -rf dist/*
+	$(MAKE) version-bump VERSION=$(VERSION)
+	uv build
+	uv publish --token "$$PYPI_TOKEN_TEST" --publish-url https://test.pypi.org/legacy/
+	git checkout README.md pyproject.toml $(PACKAGE)/server.py
+
+publish-prod: tests-run
+	rm -rf dist/*
+	$(MAKE) version-bump VERSION=$(VERSION)
+	$(MAKE) version-bump-claude-desktop VERSION=$(VERSION)
+	uv build
+	uv lock
+	uv publish --token "$$PYPI_TOKEN_PROD"
+	git commit -am "Published version $(VERSION) to PyPI"
+	git tag "v$(VERSION)"
+	git push
+	git push origin "v$(VERSION)"
+
+package-inspect-test:
+	rm -rf /tmp/test-$(PROJECT)
+	uv venv /tmp/test-$(PROJECT) --python 3.12
+	source /tmp/test-$(PROJECT)/bin/activate && uv pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ --index-strategy unsafe-best-match $(PROJECT)
+	tree /tmp/test-$(PROJECT)/lib/python3.12/site-packages/$(PACKAGE)
+	source /tmp/test-$(PROJECT)/bin/activate && which $(PROJECT)
+
+package-inspect-prod:
+	rm -rf /tmp/test-$(PROJECT)
+	uv venv /tmp/test-$(PROJECT) --python 3.12
+	source /tmp/test-$(PROJECT)/bin/activate && uv pip install $(PROJECT)
+	tree /tmp/test-$(PROJECT)/lib/python3.12/site-packages/$(PACKAGE)
+	source /tmp/test-$(PROJECT)/bin/activate && which $(PROJECT)
+
+package-run-test:
+	uvx --index-strategy unsafe-best-match --default-index https://test.pypi.org/simple/ --index https://pypi.org/simple/ --from $(PROJECT) $(PROJECT)
+
+package-run-prod:
+	uvx --from $(PROJECT) $(PROJECT)
+
+debug-constants:
+	@echo "PROJECT='$(PROJECT)'"
+	@echo "PACKAGE='$(PACKAGE)'"
+	@echo "VERSION='$(VERSION)'"

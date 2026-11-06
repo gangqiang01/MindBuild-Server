@@ -11,6 +11,7 @@ set -e
 # Directories that may be bind-mounted and need appuser access
 MOUNT_DIRS=(
     /data/files
+    /app/log
 )
 
 for dir in "${MOUNT_DIRS[@]}"; do

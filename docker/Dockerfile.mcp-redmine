@@ -1,0 +1,44 @@
+# =========================
+# mcp-redmine: Redmine MCP server
+# 以 HTTP streamable 传输启动，app 经 http://mcp-redmine:8000/mcp 调用 Redmine 工具
+# （redmine_request / redmine_get_issue / redmine_upload 等）。详见 release/docker-compose.yml。
+#
+# 构建上下文为项目根（与 Dockerfile.docreader 一致）：
+#   make docker-build-mcp-redmine
+# =========================
+FROM python:3.13-slim
+
+ARG APT_MIRROR=""
+RUN if [ -n "$APT_MIRROR" ]; then \
+        sed -i "s@http://deb.debian.org@${APT_MIRROR}@g" /etc/apt/sources.list.d/debian.sources && \
+        sed -i "s@http://security.debian.org@${APT_MIRROR}@g" /etc/apt/sources.list.d/debian.sources; \
+    fi
+
+WORKDIR /app
+
+# 先复制依赖描述，利用层缓存安装依赖。
+# --no-install-project：mcp-redmine 的 pyproject 声明了 [tool.uv] package = true，
+# 默认会构建并安装本包（需要源码）。这里只装依赖、不构建本包，源码稍后复制，
+# 运行时从 CWD /app 直接导入 mcp_redmine（与 Dockerfile.docreader 同一手法）。
+COPY mcp-redmine/pyproject.toml mcp-redmine/uv.lock ./
+RUN pip install uv --break-system-packages && \
+    python -m uv sync --locked --no-dev --no-install-project
+
+# 复制源码（mcp_redmine 包 + OpenAPI spec + 示例说明等）。
+# 注意目标必须是 /app 本身：uv sync 用了 --no-install-project，包未装入 venv，
+# 运行时依赖 CWD（/app）在 sys.path 中直接导入 mcp_redmine；
+# 若复制成 /app/mcp-redmine/，python -m mcp_redmine.server 会 ModuleNotFoundError。
+COPY mcp-redmine/ ./
+
+ENV VIRTUAL_ENV=/app/.venv
+ENV PATH="/app/.venv/bin:${PATH}"
+
+# streamable-http 默认挂在 /mcp（mcp-redmine README）。
+EXPOSE 8000
+
+# 以 HTTP streamable 启动。
+# - REDMINE_URL 必须在启动前注入（server.py 导入时即 os.environ['REDMINE_URL'] 读取），
+#   由 release/docker-compose.yml 的 REDMINE_URL 环境变量提供。
+# - REDMINE_API_KEY 不在此设置：请求时由 app 以 X-Redmine-API-Key 头携带（多用户各自归因）。
+CMD ["/app/.venv/bin/python", "-m", "mcp_redmine.server", \
+     "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8000"]
