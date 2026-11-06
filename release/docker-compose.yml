@@ -1,0 +1,191 @@
+# =============================================================================
+# mindBuilder 发布部署 compose
+# 镜像全部来自 Harbor: harbor.arfa.wise-paas.com/mindbuilder/*
+# Go server (app) 同时提供前端与 API（8080），无独立前端容器。
+#
+# 启动:      docker compose up -d
+# 持久化:    数据落 ./data，日志落 ./log（宿主机目录，容器删除不丢）
+# 可选服务:  docker compose --profile sandbox up -d
+# =============================================================================
+
+services:
+  app:
+    image: harbor.arfa.wise-paas.com/mindbuilder/app:${APP_TAG:-v1.0.0}
+    container_name: mindBuilder-app
+    dns:
+      - 8.8.8.8
+      - 114.114.114.114
+    extra_hosts:
+      - "advrm.advantech.com:10.193.213.224"
+    ports:
+      - "${APP_PORT:-8080}:8090"
+    volumes:
+      # 持久化：数据落宿主机 ./data，日志落 ./log（容器删除不丢）
+      - ./data/files:/data/files
+      # docreader 写入解析产物，app 只读消费
+      - ./data/docreader-tmp:/tmp/docreader:ro
+      # 日志目录（对应 LOG_PATH=/app/log/mindbuilder.log，见 .env）
+      - ./log:/app/log
+      - ./config/config.yaml:/app/config/config.yaml
+      # Docker 沙箱：挂载宿主机 docker.sock，让 app 通过 Docker API 拉起沙箱容器。
+      # ⚠️ 等同宿主机 root，仅适合私有化单机部署。entrypoint 会按 socket GID 把
+      # appuser 加入对应组（compose group_add 在 gosu 后无效）。需配合
+      # WEKNORA_SANDBOX_DOCKER_ENABLED=true，且宿主机已登录 Harbor 可拉取沙箱镜像。
+      - /var/run/docker.sock:/var/run/docker.sock
+      # 可选：内置模型声明，见 config/builtin_models.yaml.example
+      # - ./config/builtin_models.yaml:/app/config/builtin_models.yaml:ro
+    environment:
+      # ========== 基础 ==========
+      - TZ=${TZ:-Asia/Shanghai}
+      - GIN_MODE=${GIN_MODE:-release}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      # 日志文件路径（对应 ./log 挂载；留空只输出 stdout）
+      - LOG_PATH=${LOG_PATH:-/app/log/mindbuilder.log}
+      # 启动时自动执行数据库迁移
+      - AUTO_MIGRATE=${AUTO_MIGRATE:-true}
+      # ========== PostgreSQL（compose 内固定服务名）==========
+      - DB_DRIVER=postgres
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+      # ========== Redis ==========
+      - REDIS_ADDR=redis:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      # ========== Qdrant 向量库 ==========
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6334
+      - QDRANT_COLLECTION=${QDRANT_COLLECTION:-weknora_embeddings}
+      # ========== 文件存储（local = 落 data-files 卷，无需 MinIO）==========
+      - STORAGE_TYPE=${STORAGE_TYPE:-local}
+      - LOCAL_STORAGE_BASE_DIR=${LOCAL_STORAGE_BASE_DIR:-/data/files}
+      # ========== 文档解析 ==========
+      # app:v1.0.0 已内置 anydoc 解析引擎，docreader 为可选独立服务
+      - DOCREADER_ADDR=${DOCREADER_ADDR:-docreader:50051}
+      # ========== 其他 ==========
+      # Docker 沙箱默认关闭
+      - WEKNORA_SANDBOX_DOCKER_ENABLED=${WEKNORA_SANDBOX_DOCKER_ENABLED:-false}
+      # SSRF 白名单额外项：mcp-redmine 是同网络的可选 compose 服务（profile mcp-redmine），
+      # Redmine MCP 模板服务指向 http://mcp-redmine:8000/mcp，属内网主机名，
+      # 不放行会被 SSRF 校验拦截。覆盖 .env 同名变量；系统设置 → 安全 →
+      # SSRF 白名单（ssrf.whitelist，保存即热生效）中的条目会与此合并。
+      - SSRF_WHITELIST_EXTRA=${SSRF_WHITELIST_EXTRA:-mcp-redmine}
+    # .env 中的其余变量（模型 API Key、SYSTEM_AES_KEY 等）原样透传给 app
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      qdrant:
+        condition: service_started
+      docreader:
+        condition: service_started
+    networks:
+      - mindBuilder-network
+    restart: unless-stopped
+
+  postgres:
+    image: harbor.arfa.wise-paas.com/mindbuilder/postgres:16
+    container_name: mindBuilder-postgres
+    environment:
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_DB=${DB_NAME}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - mindBuilder-network
+    restart: unless-stopped
+    stop_grace_period: 1m
+
+  redis:
+    image: harbor.arfa.wise-paas.com/mindbuilder/redis:7.0-alpine
+    container_name: mindBuilder-redis
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - ./data/redis:/data
+    networks:
+      - mindBuilder-network
+    restart: unless-stopped
+
+  qdrant:
+    image: harbor.arfa.wise-paas.com/mindbuilder/qdrant:v1.15.5
+    container_name: mindBuilder-qdrant
+    # 如需从宿主机访问 Qdrant 控制台/REST，放开下面两行
+    # ports:
+    #   - "${QDRANT_REST_PORT:-6333}:6333"
+    #   - "${QDRANT_PORT:-6334}:6334"
+    volumes:
+      - ./data/qdrant:/qdrant/storage
+    networks:
+      - mindBuilder-network
+    restart: unless-stopped
+
+  # 独立 docreader 解析服务，默认随 docker compose up -d 启动。
+  # app 内置 anydoc 引擎作为兜底；docreader 提供更完整的解析能力。
+  docreader:
+    image: harbor.arfa.wise-paas.com/mindbuilder/docreader:${DOCREADER_TAG:-v1.0.0}
+    container_name: mindBuilder-docreader
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      - LOG_LEVEL=${LOG_LEVEL:-}
+      - DOCREADER_IMAGE_OUTPUT_DIR=/tmp/docreader
+      - DOCREADER_GRPC_PORT=50051
+      - DOCREADER_GRPC_MAX_WORKERS=${DOCREADER_GRPC_MAX_WORKERS:-4}
+      - MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-50}
+    volumes:
+      - ./data/docreader-tmp:/tmp/docreader
+    healthcheck:
+      test: ["CMD", "grpc_health_probe", "-addr=localhost:50051"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - mindBuilder-network
+    restart: unless-stopped
+
+  # 可选：Redmine MCP 服务（HTTP streamable）。app 经 http://mcp-redmine:8000/mcp
+  # 调用 Redmine 工具（redmine_request / redmine_get_issue / 上传下载等）。
+  # 仅在启用 Redmine MCP 模板时按 profile 启动：
+  #   docker compose --profile mcp-redmine up -d
+  # 需在 .env 设置 REDMINE_URL（server.py 导入时即读取，启动前必须有值）；
+  # REDMINE_API_KEY 不在此设置——请求时由 app 以 X-Redmine-API-Key 头携带（多用户归因）。
+  mcp-redmine:
+    image: harbor.arfa.wise-paas.com/mindbuilder/mcp-redmine:${MCP_REDMINE_TAG:-v1.0.0}
+    container_name: mindBuilder-mcp-redmine
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      - REDMINE_URL=${REDMINE_URL:-}
+      - REDMINE_READ_ONLY=${REDMINE_READ_ONLY:-}
+    networks:
+      - mindBuilder-network
+    restart: unless-stopped
+
+  # 可选：沙箱镜像（占位，app 默认 WEKNORA_SANDBOX_DOCKER_ENABLED=false 不使用）
+  sandbox:
+    image: harbor.arfa.wise-paas.com/mindbuilder/sandbox:v0.9.0
+    container_name: mindBuilder-sandbox
+    profiles:
+      - sandbox
+    command: ["true"]
+    restart: "no"
+
+networks:
+  mindBuilder-network:
+    driver: bridge
