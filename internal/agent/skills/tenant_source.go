@@ -30,7 +30,11 @@ const (
 	// applying it to the raw entry count instead would reject archives the
 	// install accepted, taking read_file down for a working install.
 	maxBundleEntries    = 20_000
-	maxBundleEntryBytes = 32 << 20  // 32 MiB per entry
+	// maxBundleEntryBytes mirrors maxSkillBundleFileBytes at install time:
+	// skills may vendor a single compiled artifact (helper .exe, node
+	// binary, native wheel) far larger than a source file, while the
+	// archive-wide cap still bounds how much memory read_file can take.
+	maxBundleEntryBytes = 256 << 20 // 256 MiB per entry
 	maxBundleBytes      = 512 << 20 // 512 MiB across one archive (install cap)
 )
 

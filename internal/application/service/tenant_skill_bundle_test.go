@@ -414,6 +414,37 @@ Use the scripts in this skill.
 		require.ErrorContains(t, err, `entry "scripts/large.bin" is too large`)
 	})
 
+	t.Run("accepts a compiled artifact above the legacy 32 MiB cap", func(t *testing.T) {
+		// Skills vendor compiled helpers (a Windows .exe, a node binary) that
+		// legitimately exceed the old 32 MiB per-entry cap. Deflate keeps the
+		// archive itself small while the inflated entry is 40 MiB.
+		entrySize := int64(32<<20 + 8<<20)
+		payload, checksum := deflatedRepeatedBytes(t, entrySize)
+
+		var buf bytes.Buffer
+		w := zip.NewWriter(&buf)
+		header := &zip.FileHeader{
+			Name:               "scripts/helper.exe",
+			Method:             zip.Deflate,
+			UncompressedSize64: uint64(entrySize),
+			CompressedSize64:   uint64(len(payload)),
+			CRC32:              checksum,
+		}
+		raw, err := w.CreateRaw(header)
+		require.NoError(t, err)
+		_, err = raw.Write(payload)
+		require.NoError(t, err)
+		manifest, err := w.Create("SKILL.md")
+		require.NoError(t, err)
+		_, err = manifest.Write([]byte(validSkillMD))
+		require.NoError(t, err)
+		require.NoError(t, w.Close())
+
+		bundle, err := ParseSkillBundle(buf.Bytes())
+		require.NoError(t, err)
+		require.Len(t, bundle.Files["scripts/helper.exe"], int(entrySize))
+	})
+
 	t.Run("rejects aggregate decompressed oversize", func(t *testing.T) {
 		_, err := ParseSkillBundle(zipBundleExceedingDeclaredTotal(t))
 		require.ErrorIs(t, err, ErrSkillBundleInvalid)

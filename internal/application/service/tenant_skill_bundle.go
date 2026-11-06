@@ -33,7 +33,12 @@ const (
 	// raw archive. GitHub zipballs include the whole repository, so this
 	// is higher than maxSkillBundleFiles.
 	maxSkillBundleZipEntries = 100_000
-	maxSkillBundleFileBytes  = 32 << 20  // 32 MiB per entry
+	// maxSkillBundleFileBytes caps one unpacked entry. Real skills vendor
+	// compiled artifacts — a Windows helper .exe, a node binary, a native
+	// wheel — that run past 32 MiB, so the cap sits at half the total
+	// budget rather than a sixteenth. The total cap below is what bounds
+	// aggregate memory; a single entry may consume at most half of it.
+	maxSkillBundleFileBytes  = 256 << 20 // 256 MiB per entry
 	maxSkillBundleTotalBytes = 512 << 20 // 512 MiB across the kept skill files
 )
 
