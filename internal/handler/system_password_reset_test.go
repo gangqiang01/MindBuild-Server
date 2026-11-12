@@ -80,6 +80,19 @@ func TestResetUserPasswordResetsOtherUserAndAuditsWithoutSecret(t *testing.T) {
 	if strings.Contains(string(audits.entries[0].Details), "FreshPass9") {
 		t.Fatal("audit details leaked the new password")
 	}
+	var response ResetUserPasswordResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.EmailStatus != emailStatusDisabled {
+		t.Fatalf("email status=%q, want disabled when SMTP is not configured", response.EmailStatus)
+	}
+	if strings.Contains(w.Body.String(), "FreshPass9") {
+		t.Fatal("password reset response leaked the new password")
+	}
+	if !strings.Contains(string(audits.entries[0].Details), `"email_status":"disabled"`) {
+		t.Fatalf("audit details missing notification status: %s", audits.entries[0].Details)
+	}
 }
 
 func TestResetUserPasswordRejectsSelfReset(t *testing.T) {

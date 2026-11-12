@@ -52,6 +52,14 @@ type DataSourceService interface {
 	// This is used by the frontend "Test Connection" button before creating a data source.
 	ValidateCredentials(ctx context.Context, connectorType string, credentials map[string]interface{}) error
 
+	// ListRedmineProjects returns projects using either a saved data source or
+	// credentials supplied for a data source that has not been persisted yet.
+	ListRedmineProjects(
+		ctx context.Context,
+		dataSourceID string,
+		credentials map[string]interface{},
+	) ([]types.Resource, error)
+
 	// ListAvailableResources lists resources available for sync in the external system.
 	// parentID enables lazy loading: "" lists the top level, a resource ExternalID lists its children.
 	ListAvailableResources(ctx context.Context, dsID string, parentID string) ([]types.Resource, error)

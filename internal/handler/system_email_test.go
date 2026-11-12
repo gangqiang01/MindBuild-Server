@@ -100,6 +100,24 @@ func TestBuildMailMessageEncodesSubjectAndBody(t *testing.T) {
 	}
 }
 
+func TestBuildUserEnabledEmail(t *testing.T) {
+	subject, body := buildUserEnabledEmail(
+		emailConfig{SiteURL: "https://mindbuilder.example.com"},
+		"alice",
+	)
+	if !strings.Contains(subject, "账号已启用") {
+		t.Fatalf("unexpected subject: %q", subject)
+	}
+	if !strings.Contains(body, "管理员已启用") ||
+		!strings.Contains(body, "https://mindbuilder.example.com/login") ||
+		!strings.Contains(body, "账号：alice") {
+		t.Fatalf("enabled-user email missing expected content: %q", body)
+	}
+	if strings.Contains(body, "密码") {
+		t.Fatalf("enabled-user email must not contain a password: %q", body)
+	}
+}
+
 func TestResolveEmailConfigReadsAllKeys(t *testing.T) {
 	cfg := resolveEmailConfig(context.Background(), emailTestSettings{
 		enabled: true, host: "smtp.example.com", port: 465, username: "bot",
@@ -231,5 +249,48 @@ func TestBuildNewUserEmailOmitsLoginLineWhenUnconfigured(t *testing.T) {
 	_, body := buildNewUserEmail(emailConfig{}, "alice", "PlainPass9")
 	if strings.Contains(body, "登录地址") {
 		t.Fatalf("login line must be omitted when site_url is empty, got:\n%s", body)
+	}
+}
+
+func TestBuildPasswordResetIncludesPasswordButReaddedEmailDoesNot(t *testing.T) {
+	cfg := emailConfig{SiteURL: "https://mindbuilder.example.com"}
+	resetSubject, resetBody := buildPasswordResetEmail(cfg, "alice", "FreshPass9")
+	if !strings.Contains(resetSubject, "密码已重置") || !strings.Contains(resetBody, "登录会话已失效") {
+		t.Fatalf("password reset email is missing the notification details: %q %q", resetSubject, resetBody)
+	}
+	if !strings.Contains(resetBody, "https://mindbuilder.example.com/login") {
+		t.Fatalf("password reset email is missing login URL: %q", resetBody)
+	}
+	if !strings.Contains(resetBody, "FreshPass9") {
+		t.Fatal("password reset email must include the newly set password")
+	}
+
+	readdedSubject, readdedBody := buildReaddedUserEmail(cfg, "alice")
+	if !strings.Contains(readdedSubject, "重新加入空间") || !strings.Contains(readdedBody, "使用原有密码登录") {
+		t.Fatalf("re-add email is missing the notification details: %q %q", readdedSubject, readdedBody)
+	}
+	if strings.Contains(readdedBody, "密码是") {
+		t.Fatal("re-add email must not include a password")
+	}
+}
+
+func TestNotifyPasswordResetUsesBestEffortEmailStatuses(t *testing.T) {
+	user := &types.User{ID: "u1", Username: "alice", Email: "alice@example.com"}
+	h := &SystemHandler{}
+	status, detail := h.notifyPasswordReset(context.Background(), user, "FreshPass9")
+	if status != emailStatusDisabled || detail != "" {
+		t.Fatalf("nil settings: status=%q detail=%q, want disabled", status, detail)
+	}
+
+	h.systemSettingSvc = emailTestSettings{enabled: true}
+	status, detail = h.notifyPasswordReset(context.Background(), user, "FreshPass9")
+	if status != emailStatusNotConfigured || detail != "" {
+		t.Fatalf("unconfigured relay: status=%q detail=%q, want not_configured", status, detail)
+	}
+
+	h.systemSettingSvc = emailTestSettings{enabled: true, host: "127.0.0.1", port: 1, encryption: "none"}
+	status, detail = h.notifyPasswordReset(context.Background(), user, "FreshPass9")
+	if status != emailStatusFailed || detail == "" {
+		t.Fatalf("unreachable relay: status=%q detail=%q, want failed with reason", status, detail)
 	}
 }

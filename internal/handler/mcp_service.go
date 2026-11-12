@@ -536,6 +536,27 @@ func (h *MCPServiceHandler) UpdateMCPService(c *gin.Context) {
 			service.AdvancedConfig.RetryDelay = int(retryDelay)
 		}
 	}
+	// Template config is non-secret managed-template settings (e.g. the
+	// mcp-redmine upstream URL). It drives per-request headers, so an explicit
+	// null clears it; presence replaces the whole object.
+	if rawTemplate, ok := updateData["template_config"]; ok {
+		if rawTemplate == nil {
+			service.TemplateConfig = nil
+		} else if templateMap, ok := rawTemplate.(map[string]interface{}); ok {
+			tpl := &types.MCPTemplateConfig{}
+			if kind, ok := templateMap["kind"].(string); ok {
+				tpl.Kind = kind
+			}
+			if baseURL, ok := templateMap["redmine_base_url"].(string); ok {
+				tpl.RedmineBaseURL = baseURL
+			}
+			if readOnly, ok := templateMap["read_only"].(bool); ok {
+				tpl.ReadOnly = readOnly
+			}
+			service.TemplateConfig = tpl
+		}
+		updateFields["template_config"] = true
+	}
 	if err := mcpsecurity.ValidateServiceOutboundURLs(&service); err != nil {
 		logger.Warnf(ctx, "SSRF validation failed for MCP service update: %v", err)
 		c.Error(errors.NewBadRequestError(err.Error()))

@@ -455,6 +455,43 @@ func (s *DataSourceService) ListAvailableResources(
 	return resources, nil
 }
 
+// ListRedmineProjects returns every project visible to a Redmine credential set.
+// Saved sources keep credentials server-side; unsaved/replacement credentials
+// are passed only for this request and are never persisted.
+func (s *DataSourceService) ListRedmineProjects(
+	ctx context.Context,
+	dataSourceID string,
+	credentials map[string]interface{},
+) ([]types.Resource, error) {
+	config := &types.DataSourceConfig{
+		Type:        types.ConnectorTypeRedmine,
+		Credentials: credentials,
+	}
+	if dataSourceID != "" {
+		ds, err := s.GetDataSource(ctx, dataSourceID)
+		if err != nil {
+			return nil, err
+		}
+		if ds.Type != types.ConnectorTypeRedmine {
+			return nil, fmt.Errorf("data source is not Redmine")
+		}
+		config, err = ds.ParseConfig()
+		if err != nil {
+			return nil, datasource.ErrInvalidConfig
+		}
+	}
+
+	connector, err := s.connectorRegistry.Get(types.ConnectorTypeRedmine)
+	if err != nil {
+		return nil, err
+	}
+	lister, ok := connector.(datasource.ProjectLister)
+	if !ok {
+		return nil, fmt.Errorf("Redmine connector does not support project listing")
+	}
+	return lister.ListProjects(ctx, config)
+}
+
 // ResolveResourceAncestors resolves the ancestor ExternalIDs needed to reveal the
 // given resources in a lazily-loaded picker (see the connector method for details).
 func (s *DataSourceService) ResolveResourceAncestors(

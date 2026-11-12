@@ -15,7 +15,10 @@ with open(current_dir / 'redmine_openapi.yml') as f:
     SPEC = yaml.safe_load(f)
 
 # Constants from environment
-REDMINE_URL = os.environ['REDMINE_URL'].rstrip('/') + '/'  # Normalize to always end with /
+# REDMINE_URL is only the fallback base URL. On HTTP transports a client can target
+# its own Redmine instance per request via the X-Redmine-URL header (see
+# resolve_redmine_url), so the env var is optional in shared/multi-tenant deployments.
+REDMINE_URL = (os.environ.get('REDMINE_URL', '').rstrip('/') + '/') if os.environ.get('REDMINE_URL') else ''
 REDMINE_API_KEY = os.environ.get('REDMINE_API_KEY', '')  # optional: HTTP clients can send X-Redmine-API-Key per request
 REDMINE_RESPONSE_FORMAT = os.environ.get('REDMINE_RESPONSE_FORMAT', 'yaml').lower()
 
@@ -42,6 +45,33 @@ REDMINE_CA_BUNDLE = os.environ.get('REDMINE_CA_BUNDLE', '')
 
 # Read-only mode (enabled when set to "1") - only GET requests are allowed
 REDMINE_READ_ONLY = os.environ.get('REDMINE_READ_ONLY') == '1'
+
+
+def resolve_redmine_url(ctx: Context = None) -> tuple[str, str]:
+    """Per-request Redmine base URL, mirroring the X-Redmine-API-Key pattern:
+    an HTTP client sends X-Redmine-URL to point this shared server at its own
+    Redmine instance; the REDMINE_URL env var is the fallback (stdio/single-tenant).
+    Returns (base_url_normalized_to_end_with_slash, error_message)."""
+    headers = {} if ctx is None or ctx.headers is None else ctx.headers  # no headers on stdio
+    override = (headers.get('x-redmine-url') or '').strip().rstrip('/')
+    base_raw = override or (REDMINE_URL.rstrip('/') if REDMINE_URL else '')
+    if not base_raw:
+        return '', "No Redmine URL: set REDMINE_URL or send an X-Redmine-URL request header"
+    if not base_raw.lower().startswith(('http://', 'https://')):
+        return '', ("Redmine URL is missing an 'http://' or 'https://' protocol: "
+                    f"got {base_raw!r}; send X-Redmine-URL with a full URL")
+    return base_raw + '/', ''
+
+
+def resolve_read_only(ctx: Context = None) -> bool:
+    """Read-only can be enforced per request via X-Redmine-Read-Only: 1, in addition
+    to the server-wide REDMINE_READ_ONLY env switch."""
+    if REDMINE_READ_ONLY:
+        return True
+    if ctx is None or ctx.headers is None:
+        return False
+    return ctx.headers.get('x-redmine-read-only') == '1'
+
 
 if REDMINE_DANGEROUSLY_ACCEPT_INVALID_CERTS:
     _ssl_verify = False
@@ -72,9 +102,9 @@ else:
 def request(path: str, method: str = 'get', data: dict = None, params: dict = None,
             content_type: str = 'application/json', content: bytes = None, raw: bool = False,
             ctx: Context = None) -> dict:
-    if REDMINE_READ_ONLY and method.lower() != 'get':
+    if resolve_read_only(ctx) and method.lower() != 'get':
         return {"status_code": 0, "body": None,
-                "error": f"REDMINE_READ_ONLY is enabled: refusing {method.upper()} request"}
+                "error": f"Read-only mode is enabled: refusing {method.upper()} request"}
 
     # On HTTP transports a client can send its own key per request, so a shared server acts
     # as the calling user instead of one service account (#49). Env key is the fallback.
@@ -84,6 +114,11 @@ def request(path: str, method: str = 'get', data: dict = None, params: dict = No
         return {"status_code": 0, "body": None,
                 "error": "No API key: set REDMINE_API_KEY or send an X-Redmine-API-Key request header"}
 
+    # Same per-request override for the Redmine base URL (X-Redmine-URL header).
+    redmine_url, url_error = resolve_redmine_url(ctx)
+    if url_error:
+        return {"status_code": 0, "body": None, "error": url_error}
+
     headers = {
         'X-Redmine-API-Key': key,
         'Content-Type': content_type,
@@ -92,11 +127,11 @@ def request(path: str, method: str = 'get', data: dict = None, params: dict = No
 
     # Security: path is model-controlled. urljoin returns absolute URLs in `path` unchanged, which would
     # redirect the request (and the API key header) to an arbitrary host. Only ever allow URLs that stay
-    # under REDMINE_URL (which is normalized to end with '/'), also catching '../' path traversal.
-    url = urljoin(REDMINE_URL, path.lstrip('/'))
-    if not url.startswith(REDMINE_URL):
+    # under the resolved base URL (normalized to end with '/'), also catching '../' path traversal.
+    url = urljoin(redmine_url, path.lstrip('/'))
+    if not url.startswith(redmine_url):
         return {"status_code": 0, "body": None,
-                "error": f"Path escapes REDMINE_URL, refusing to send API key to: {url}"}
+                "error": f"Path escapes Redmine base URL, refusing to send API key to: {url}"}
 
     try:
         response = _http_client.request(method=method.lower(), url=url, json=data, params=params, headers=headers,

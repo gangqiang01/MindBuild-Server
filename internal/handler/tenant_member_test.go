@@ -27,6 +27,7 @@ import (
 type stubMemberService struct {
 	interfaces.TenantMemberService
 	add             func(ctx context.Context, userID string, tenantID uint64, role types.TenantRole, invitedBy *string) (*types.TenantMember, error)
+	listByUser      func(ctx context.Context, userID string) ([]*types.TenantMember, error)
 	listTenant      func(ctx context.Context, tenantID uint64) ([]*types.TenantMember, error)
 	listMembersPage func(ctx context.Context, tenantID uint64, query string, page, pageSize int) ([]*types.TenantMember, int64, error)
 	updateRole      func(ctx context.Context, userID string, tenantID uint64, newRole types.TenantRole) error
@@ -74,6 +75,13 @@ func (s *stubMemberService) AddMember(ctx context.Context, userID string, tenant
 
 func (s *stubMemberService) ListByTenant(ctx context.Context, tenantID uint64) ([]*types.TenantMember, error) {
 	return s.listTenant(ctx, tenantID)
+}
+
+func (s *stubMemberService) ListByUser(ctx context.Context, userID string) ([]*types.TenantMember, error) {
+	if s.listByUser != nil {
+		return s.listByUser(ctx, userID)
+	}
+	return []*types.TenantMember{{UserID: userID}}, nil
 }
 
 func (s *stubMemberService) UpdateRole(ctx context.Context, userID string, tenantID uint64, newRole types.TenantRole) error {
@@ -151,6 +159,7 @@ func memberTestRouterWithCfg(h *TenantMemberHandler, cfg *config.Config) *gin.En
 	tenantByID := r.Group("/tenants/:id", middleware.RequirePathTenantMatch(cfg))
 	tenantByID.GET("/members", h.ListMembers)
 	tenantByID.POST("/members", h.AddMember)
+	tenantByID.POST("/members/create", h.CreateMember)
 	tenantByID.PUT("/members/:user_id", h.UpdateMemberRole)
 	tenantByID.DELETE("/members/:user_id", h.RemoveMember)
 	tenantByID.POST("/leave", h.LeaveTenant)
@@ -328,6 +337,84 @@ func TestTenantMember_AddMember_HappyPath(t *testing.T) {
 	w := doJSON(t, memberTestRouter(h), http.MethodPost, "/tenants/1/members", body, caller)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestTenantMember_AddMember_ReaddedUserGetsEmailNotification(t *testing.T) {
+	ms := &stubMemberService{
+		listByUser: func(context.Context, string) ([]*types.TenantMember, error) {
+			return nil, nil
+		},
+		add: func(_ context.Context, userID string, tenantID uint64, role types.TenantRole, _ *string) (*types.TenantMember, error) {
+			return &types.TenantMember{UserID: userID, TenantID: tenantID, Role: role}, nil
+		},
+	}
+	us := &stubMemberUserService{
+		getByEmail: func(_ context.Context, email string) (*types.User, error) {
+			return &types.User{ID: "u-orphan", Email: email, Username: "orphan"}, nil
+		},
+	}
+	h := NewTenantMemberHandler(ms, us, emailTestSettings{enabled: true, host: "127.0.0.1", port: 1, encryption: "none"})
+	w := doJSON(t, memberTestRouter(h), http.MethodPost, "/tenants/1/members",
+		map[string]any{"email": "orphan@example.com", "role": "viewer"}, "u-owner")
+	if w.Code != http.StatusCreated {
+		t.Fatalf("re-add should succeed despite email failure: status=%d body=%s", w.Code, w.Body.String())
+	}
+	var response struct {
+		EmailStatus string `json:"email_status"`
+		EmailError  string `json:"email_error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.EmailStatus != emailStatusFailed || response.EmailError == "" {
+		t.Fatalf("expected failed notification status, got %+v", response)
+	}
+	var responseBody map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &responseBody); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := responseBody["generated_password"]; exists {
+		t.Fatalf("re-added account must not get a newly generated password: %s", w.Body.String())
+	}
+}
+
+func TestTenantMember_CreateMember_ReaddedUserKeepsPassword(t *testing.T) {
+	ms := &stubMemberService{
+		listByUser: func(context.Context, string) ([]*types.TenantMember, error) {
+			return nil, nil
+		},
+		add: func(_ context.Context, userID string, tenantID uint64, role types.TenantRole, _ *string) (*types.TenantMember, error) {
+			return &types.TenantMember{UserID: userID, TenantID: tenantID, Role: role}, nil
+		},
+	}
+	us := &stubMemberUserService{
+		getByEmail: func(_ context.Context, email string) (*types.User, error) {
+			return &types.User{ID: "u-orphan", Email: email, Username: "orphan"}, nil
+		},
+	}
+	h := NewTenantMemberHandler(ms, us, nil)
+	w := doJSON(t, memberTestRouter(h), http.MethodPost, "/tenants/1/members/create",
+		map[string]any{
+			"username": "orphan", "email": "orphan@example.com", "role": "viewer",
+			"password": "IgnoredPass9",
+		}, "u-owner")
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("re-add should succeed: status=%d body=%s", w.Code, w.Body.String())
+	}
+	var response createMemberSuccessResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Data.GeneratedPassword != "" {
+		t.Fatalf("re-added account must not get a newly generated password, got %+v", response.Data)
+	}
+	if !response.Data.UserReadded {
+		t.Fatal("response should identify the existing user as re-added")
+	}
+	if response.Data.EmailStatus != emailStatusDisabled {
+		t.Fatalf("expected disabled email status without SMTP config, got %q", response.Data.EmailStatus)
 	}
 }
 

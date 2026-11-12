@@ -57,11 +57,8 @@ func NewTenantMemberHandler(
 }
 
 // addMemberRequest is the JSON body for POST /tenants/:id/members.
-// Email is the user-facing invite identifier; the handler resolves it to a
-// User via UserService.GetUserByEmail. PR 3 does not implement
-// email-based invitations for users that don't exist yet — the invitee
-// must already have an account. Sending an email invite is tracked as a
-// PR 4 candidate.
+// Email identifies an existing user. If that user has no tenant memberships,
+// they are treated as rejoining and receive a notification email.
 type addMemberRequest struct {
 	Email string           `json:"email" binding:"required,email"`
 	Role  types.TenantRole `json:"role" binding:"required"`
@@ -187,7 +184,7 @@ func (h *TenantMemberHandler) ListMembers(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        id        path  string                 true  "空间 ID"
-// @Param        request   body  addMemberRequest       true  "邀请请求"
+// @Param        request   body  addMemberRequest       true  "添加成员请求"
 // @Success      201  {object}  map[string]interface{}
 // @Security     Bearer
 // @Router       /tenants/{id}/members [post]
@@ -226,6 +223,7 @@ func (h *TenantMemberHandler) AddMember(c *gin.Context) {
 		c.Error(apperrors.NewInternalServerError("failed to look up user").WithDetails(err.Error()))
 		return
 	}
+	notifyReadded := h.userHasNoMemberships(ctx, user)
 
 	// Attribute the invite to a human caller only. The X-API-Key auth
 	// path attaches a synthetic "system-<tenantID>" user (see
@@ -239,9 +237,16 @@ func (h *TenantMemberHandler) AddMember(c *gin.Context) {
 		invitedBy = &caller
 	}
 
-	// Add the member and write the 201 / mapped-error response through the
-	// shared helper (also used by the invitation auto-accept path).
-	addMemberAndRespond(c, ctx, h.memberService, user, tenantID, req.Role, invitedBy)
+	member, err := h.memberService.AddMember(ctx, user.ID, tenantID, req.Role, invitedBy)
+	if err != nil {
+		writeAddMemberError(c, ctx, user, tenantID, err)
+		return
+	}
+	emailStatus, emailError := "", ""
+	if notifyReadded {
+		emailStatus, emailError = notifyReaddedUserByEmail(ctx, h.systemSettingSvc, user)
+	}
+	writeAddMemberSuccessWithEmail(c, user, member, emailStatus, emailError)
 }
 
 func writeAddMemberError(
@@ -268,10 +273,19 @@ func writeAddMemberError(
 }
 
 func writeAddMemberSuccess(c *gin.Context, user *types.User, member *types.TenantMember) {
+	writeAddMemberSuccessWithEmail(c, user, member, "", "")
+}
+
+func writeAddMemberSuccessWithEmail(
+	c *gin.Context,
+	user *types.User,
+	member *types.TenantMember,
+	emailStatus, emailError string,
+) {
 	// Project the freshly added row through the same response shape the
 	// list endpoint uses, so the UI can swap "Add Member" UX into the
 	// table without an extra round-trip.
-	c.JSON(http.StatusCreated, gin.H{
+	response := gin.H{
 		"success": true,
 		"data": types.TenantMemberResponse{
 			UserID:    member.UserID,
@@ -283,7 +297,26 @@ func writeAddMemberSuccess(c *gin.Context, user *types.User, member *types.Tenan
 			InvitedBy: member.InvitedBy,
 			JoinedAt:  member.JoinedAt,
 		},
-	})
+	}
+	if emailStatus != "" {
+		response["email_status"] = emailStatus
+	}
+	if emailError != "" {
+		response["email_error"] = emailError
+	}
+	c.JSON(http.StatusCreated, response)
+}
+
+func (h *TenantMemberHandler) userHasNoMemberships(ctx context.Context, user *types.User) bool {
+	if user == nil {
+		return false
+	}
+	memberships, err := h.memberService.ListByUser(ctx, user.ID)
+	if err != nil {
+		logger.Warnf(ctx, "Cannot determine whether user %s is being re-added: %v", user.ID, err)
+		return false
+	}
+	return len(memberships) == 0
 }
 
 // addMemberAndRespond calls TenantMemberService.AddMember and writes the
@@ -324,16 +357,17 @@ type createMemberRequest struct {
 // createMemberResponse is the `data` payload for POST /tenants/:id/members/create.
 // UserCreated distinguishes "we minted a new account" from "we bound an
 // existing one" so the UI can decide whether the one-time GeneratedPassword
-// needs to be revealed. GeneratedPassword is populated exactly once, only
-// for a freshly created account with a server-minted password, and is never
-// logged or retrievable again.
+// needs to be revealed. GeneratedPassword is populated exactly once only when
+// a new account is created with a server-minted password.
 type createMemberResponse struct {
 	Member            types.TenantMemberResponse `json:"member"`
 	UserCreated       bool                       `json:"user_created"`
+	UserReadded       bool                       `json:"user_readded,omitempty"`
 	GeneratedPassword string                     `json:"generated_password,omitempty"`
-	// EmailStatus 是创建用户后通知邮件的结果（仅新建用户时返回）：
-	// sent / failed / disabled / not_configured。best-effort，不影响成员创建结果。
+	// EmailStatus reports best-effort notification delivery for a new account
+	// or a user being re-added after losing every tenant membership.
 	EmailStatus string `json:"email_status,omitempty"`
+	EmailError  string `json:"email_error,omitempty"`
 }
 
 // createMemberSuccessResponse is the 201 envelope for POST /tenants/:id/members/create.
@@ -350,8 +384,8 @@ type createMemberSuccessResponse struct {
 // @Description  Owner 在成员管理里直接建档并绑定角色，替代邮箱邀请流程：
 // @Description
 //
-//   - 邮箱已注册：直接复用该账号并写入指定角色的 active 成员关系，
-//     绝不改写其密码（重置密码走系统管理员接口）；
+//   - 邮箱已注册：复用账号并写入成员关系，不改写其密码；若用户此前已
+//     从所有空间移除，则发送重新加入通知并继续使用原密码；
 //
 //   - 邮箱未注册：按 tenantless 方式新建账号（不另建个人空间，该空间
 //     即其首个成员身份，登录时自动落入本空间）；密码缺省时服务端
@@ -452,6 +486,7 @@ func (h *TenantMemberHandler) CreateMember(c *gin.Context) {
 		invitedBy = &caller
 	}
 
+	notifyReadded := !userCreated && h.userHasNoMemberships(ctx, user)
 	member, addErr := h.memberService.AddMember(ctx, user.ID, tenantID, req.Role, invitedBy)
 	if addErr != nil {
 		writeAddMemberError(c, ctx, user, tenantID, addErr)
@@ -461,17 +496,18 @@ func (h *TenantMemberHandler) CreateMember(c *gin.Context) {
 	logger.Infof(ctx, "CreateMember: user %s (created=%v) bound to tenant %d as %s",
 		user.Email, userCreated, tenantID, req.Role)
 
-	// 3) 创建用户成功后 best-effort 发送通知邮件：未配置邮箱服务器或发送失败
-	// 都不影响成员创建结果（管理员仍可通过其他渠道告知）。仅新建用户时发送，
-	// 复用 SystemHandler 的 notifyCreatedUserByEmail 以保持两条路径一致。
-	emailStatus := ""
+	// 3) Email delivery is best-effort. Newly created users receive their
+	// initial credentials; an existing account with no remaining memberships
+	// receives a re-add notice and keeps their existing password.
+	emailStatus, emailError := "", ""
 	if userCreated {
 		pwd := generatedPassword
 		if pwd == "" && req.Password != nil {
 			pwd = *req.Password
 		}
-		status, _ := notifyCreatedUserByEmail(ctx, h.systemSettingSvc, user, pwd)
-		emailStatus = status
+		emailStatus, emailError = notifyCreatedUserByEmail(ctx, h.systemSettingSvc, user, pwd)
+	} else if notifyReadded {
+		emailStatus, emailError = notifyReaddedUserByEmail(ctx, h.systemSettingSvc, user)
 	}
 
 	c.JSON(http.StatusCreated, createMemberSuccessResponse{
@@ -488,8 +524,10 @@ func (h *TenantMemberHandler) CreateMember(c *gin.Context) {
 				JoinedAt:  member.JoinedAt,
 			},
 			UserCreated:       userCreated,
+			UserReadded:       notifyReadded,
 			GeneratedPassword: generatedPassword,
 			EmailStatus:       emailStatus,
+			EmailError:        emailError,
 		},
 	})
 }

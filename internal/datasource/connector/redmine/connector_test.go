@@ -259,6 +259,28 @@ func TestListResourcesTree(t *testing.T) {
 	}
 }
 
+func TestListProjectsReturnsFlatListWithIdentifiers(t *testing.T) {
+	f := newFakeRedmine(t)
+	f.projects = []project{
+		{ID: 1, Name: "Shop", Identifier: "shop"},
+		{ID: 2, Name: "Shop Backend", Identifier: "shop-backend", Parent: &parentRef{ID: 1}},
+	}
+
+	projects, err := NewConnector().ListProjects(context.Background(), f.config(nil, nil))
+	if err != nil {
+		t.Fatalf("list projects: %v", err)
+	}
+	if len(projects) != 2 {
+		t.Fatalf("expected all projects, got %+v", projects)
+	}
+	if projects[0].ExternalID != "shop" || projects[0].Name != "Shop" {
+		t.Fatalf("unexpected root project: %+v", projects[0])
+	}
+	if projects[1].ExternalID != "shop-backend" || projects[1].ParentID != "shop" {
+		t.Fatalf("unexpected child project: %+v", projects[1])
+	}
+}
+
 func TestFetchAllIssuesAndWiki(t *testing.T) {
 	f := newFakeRedmine(t)
 	f.issues = []issue{

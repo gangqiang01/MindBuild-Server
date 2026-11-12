@@ -67,6 +67,26 @@ func TestSetUserStatus_Success(t *testing.T) {
 	}
 }
 
+func TestSetUserStatus_EnableReportsEmailStatus(t *testing.T) {
+	svc := &setUserStatusService{returnUser: &types.User{
+		ID: "u2", Username: "bob", Email: "bob@example.com", IsActive: true,
+	}}
+	h := &SystemHandler{userSvc: svc}
+	r := statusRouter(h, "admin-1")
+
+	req := httptest.NewRequest(http.MethodPost, "/system/admin/users/status",
+		bytes.NewBufferString(`{"user_id":"u2","is_active":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var response map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+	require.Equal(t, emailStatusDisabled, response["email_status"])
+	require.Equal(t, true, response["is_active"])
+}
+
 func TestSetUserStatus_GuardErrors400(t *testing.T) {
 	for _, sentinel := range []error{service.ErrCannotDisableSelf, service.ErrCannotDisableLastAdmin} {
 		svc := &setUserStatusService{err: sentinel}

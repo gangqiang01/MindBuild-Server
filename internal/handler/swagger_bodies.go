@@ -209,14 +209,18 @@ type ListParserEnginesResponse struct {
 
 // SetUserStatusResponse is the JSON body written by this handler.
 type SetUserStatusResponse struct {
-	User     types.UserInfo `json:"user"`
-	IsActive bool           `json:"is_active"`
-	Message  string         `json:"message"`
+	User        types.UserInfo `json:"user"`
+	IsActive    bool           `json:"is_active"`
+	Message     string         `json:"message"`
+	EmailStatus string         `json:"email_status,omitempty"`
+	EmailError  string         `json:"email_error,omitempty"`
 }
 
 // ResetUserPasswordResponse is the JSON body written by this handler.
 type ResetUserPasswordResponse struct {
-	Message string `json:"message"`
+	Message     string `json:"message"`
+	EmailStatus string `json:"email_status"`
+	EmailError  string `json:"email_error,omitempty"`
 }
 
 // PurgeArchivedRuntimeTasksResponse is the JSON body written by this handler.

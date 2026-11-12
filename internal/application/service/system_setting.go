@@ -321,20 +321,20 @@ var registry = map[string]settingSpec{
 			"（各模型仍会尊重自身在模型管理里配置的上限）。仅影响后台任务，不影响交互式对话。",
 	},
 	// ---- 邮件服务器（SMTP）----
-	// Platform-wide SMTP relay used for user-creation notification emails.
-	// All keys are read on every send attempt (CreateSystemUser / the admin
-	// test-email endpoint), so edits take effect immediately — no restart,
+	// Platform-wide SMTP relay used for user lifecycle notifications.
+	// All keys are read on every send attempt (user creation, password reset,
+	// re-addition to a tenant, and the admin test-email endpoint), so edits take effect immediately — no restart,
 	// no in-process SMTP client pool to invalidate. Sending is best-effort:
-	// a missing relay or a failed send NEVER fails user creation itself
+	// a missing relay or a failed send NEVER fails the triggering operation
 	// (see handler/system_email.go).
 	"email.enabled": {
 		Type:     "bool",
 		EnvName:  "WEKNORA_EMAIL_ENABLED",
 		Default:  false,
 		Category: "email",
-		Description: "是否启用邮件通知。开启后，系统管理员创建用户成功时会尝试把账号信息" +
-			"（用户名/初始密码）发送到该用户邮箱；未配置邮件服务器或发送失败均不影响用户创建，" +
-			"管理员仍可当面或通过其他渠道告知密码。",
+		Description: "是否启用邮件通知。开启后，创建用户时会发送账号信息（用户名/初始密码）；" +
+			"重置密码时会通过邮件发送新密码；已从所有空间移除的用户重新添加时会发送通知。" +
+			"未配置邮件服务器或发送失败均不影响相关操作。",
 	},
 	"email.smtp_host": {
 		Type:        "string",

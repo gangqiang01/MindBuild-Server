@@ -320,6 +320,7 @@ func RegisterDataSourceRoutes(
 
 		// Validate credentials without persistence (for "Test Connection" button) — Admin+
 		ds.POST("/validate-credentials", g.Admin(), handler.ValidateCredentials)
+		ds.POST("/redmine/projects", g.Admin(), handler.ListRedmineProjects)
 
 		// CRUD operations
 		ds.POST("", g.Admin(), handler.CreateDataSource)

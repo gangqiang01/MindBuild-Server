@@ -60,7 +60,7 @@ def test_leading_slash_path_stays_on_redmine(capture_requests):
 def test_escaping_paths_are_refused(capture_requests, path):
     result = server.request(path)
     assert result["status_code"] == 0
-    assert "escapes REDMINE_URL" in result["error"]
+    assert "escapes Redmine base URL" in result["error"]
     assert capture_requests == []  # nothing left the building
 
 
@@ -87,7 +87,7 @@ def test_read_only_blocks_writes(capture_requests, monkeypatch):
     for method in ["post", "put", "PATCH", "delete"]:
         result = server.request("issues.json", method=method)
         assert result["status_code"] == 0
-        assert "REDMINE_READ_ONLY" in result["error"]
+        assert "Read-only mode is enabled" in result["error"]
     assert capture_requests == []
 
 
@@ -294,6 +294,62 @@ def test_no_key_at_all_is_a_clear_error(capture_requests, monkeypatch):
     assert result["status_code"] == 0
     assert "X-Redmine-API-Key" in result["error"]
     assert capture_requests == []  # nothing sent without a key
+
+
+# Per-request Redmine base URL via X-Redmine-URL header: one shared container
+# can serve tenants pointing at different Redmine instances.
+
+def test_header_url_overrides_env_base(capture_requests):
+    ctx = FakeCtx({"x-redmine-url": "https://tenant-a.redmine.example.com"})
+    result = server.request("projects.json", ctx=ctx)
+    assert result["status_code"] == 200
+    assert capture_requests[0]["url"] == "https://tenant-a.redmine.example.com/projects.json"
+
+
+def test_header_url_trailing_slash_is_normalized(capture_requests):
+    ctx = FakeCtx({"x-redmine-url": "https://tenant-a.redmine.example.com/"})
+    server.request("projects.json", ctx=ctx)
+    assert capture_requests[0]["url"] == "https://tenant-a.redmine.example.com/projects.json"
+
+
+def test_env_url_remains_the_fallback(capture_requests):
+    for ctx in [None, FakeCtx(None), FakeCtx({})]:
+        server.request("issues.json", ctx=ctx)
+    assert all(c["url"].startswith("https://redmine.example.org/") for c in capture_requests)
+
+
+def test_header_url_without_protocol_is_refused(capture_requests):
+    ctx = FakeCtx({"x-redmine-url": "redmine.example.com:3022"})
+    result = server.request("projects.json", ctx=ctx)
+    assert result["status_code"] == 0
+    assert "missing an 'http://' or 'https://' protocol" in result["error"]
+    assert capture_requests == []
+
+
+def test_no_url_at_all_is_a_clear_error(capture_requests, monkeypatch):
+    monkeypatch.setattr(server, "REDMINE_URL", "")
+    result = server.request("projects.json", ctx=None)
+    assert result["status_code"] == 0
+    assert "X-Redmine-URL" in result["error"]
+    assert capture_requests == []
+
+
+def test_path_escape_check_uses_the_per_request_base(capture_requests):
+    ctx = FakeCtx({"x-redmine-url": "https://tenant-a.redmine.example.com"})
+    result = server.request("https://attacker.example/collect", ctx=ctx)
+    assert result["status_code"] == 0
+    assert "escapes Redmine base URL" in result["error"]
+    assert capture_requests == []
+
+
+def test_per_request_read_only_blocks_writes(capture_requests):
+    ctx = FakeCtx({"x-redmine-read-only": "1"})
+    blocked = server.request("issues.json", method="post", ctx=ctx)
+    assert blocked["status_code"] == 0
+    assert "Read-only mode is enabled" in blocked["error"]
+    allowed = server.request("issues.json", method="get", ctx=ctx)
+    assert allowed["status_code"] == 200
+    assert len(capture_requests) == 1
 
 
 # Unknown tool arguments are rejected instead of silently dropped (#52)

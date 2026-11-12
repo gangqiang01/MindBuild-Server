@@ -163,6 +163,27 @@ func applyAuthHeaders(headers map[string]string, ac *types.MCPAuthConfig) {
 	}
 }
 
+// applyTemplateHeaders maps a managed template service (e.g. mcp-redmine) onto
+// the per-request headers its container understands. A shared mcp-redmine
+// container has no tenant-specific REDMINE_URL env; the upstream Redmine
+// instance arrives per request as X-Redmine-URL (mirroring the per-request
+// X-Redmine-API-Key auth header), with X-Redmine-Read-Only enforcing the
+// template's write policy.
+func applyTemplateHeaders(headers map[string]string, tc *types.MCPTemplateConfig) {
+	if tc == nil {
+		return
+	}
+	switch tc.Kind {
+	case "redmine":
+		if tc.RedmineBaseURL != "" {
+			headers["X-Redmine-URL"] = tc.RedmineBaseURL
+		}
+		if tc.ReadOnly {
+			headers["X-Redmine-Read-Only"] = "1"
+		}
+	}
+}
+
 // OAuthRequiredError signals that the target MCP server requires OAuth
 // authorization — it answered the connect/initialize handshake with a 401 that
 // advertised RFC 9728 protected-resource metadata — even though the service was
@@ -221,6 +242,7 @@ func NewMCPClient(config *ClientConfig) (MCPClient, error) {
 		headers[key] = value
 	}
 	applyAuthHeaders(headers, config.Service.AuthConfig)
+	applyTemplateHeaders(headers, config.Service.TemplateConfig)
 
 	// Build OAuth config when this service uses the OAuth strategy. The
 	// client_id comes from the dynamically-registered client persisted at

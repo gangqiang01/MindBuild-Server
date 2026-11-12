@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/Tencent/WeKnora/internal/types"
@@ -30,6 +31,21 @@ func ValidateServiceOutboundURLs(service *types.MCPService) error {
 			if err := secutils.ValidateURLForSSRF(metadataURL); err != nil {
 				return fmt.Errorf("MCP OAuth metadata URL failed SSRF validation: %w", err)
 			}
+		}
+	}
+	if tc := service.TemplateConfig; tc != nil && tc.Kind == "redmine" {
+		// The Go service never dials RedmineBaseURL — the managed mcp-redmine
+		// container does, per request via X-Redmine-URL — so SSRF/private-IP
+		// checks do not apply. A scheme check does: without http(s) the
+		// container's httpx client fails every call with
+		// "Request URL is missing an 'http://' or 'https://' protocol".
+		redmineURL := strings.TrimSpace(tc.RedmineBaseURL)
+		if redmineURL == "" {
+			return fmt.Errorf("redmine template requires redmine_base_url")
+		}
+		parsed, err := url.Parse(redmineURL)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return fmt.Errorf("redmine_base_url must be a full http(s) URL, got: %s", redmineURL)
 		}
 	}
 	return nil

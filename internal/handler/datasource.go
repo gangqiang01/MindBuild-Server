@@ -342,6 +342,64 @@ func (h *DataSourceHandler) ValidateCredentials(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "connected"})
 }
 
+// ListRedmineProjects godoc
+// @Summary List Redmine projects for selection
+// @Description Lists all projects visible to saved or transient Redmine credentials without persisting credentials.
+// @Tags DataSource
+// @Accept json
+// @Produce json
+// @Param request body object true "data_source_id or credentials"
+// @Success 200 {object} []map[string]string
+// @Failure 400 {object} map[string]string
+// @Router /datasource/redmine/projects [post]
+func (h *DataSourceHandler) ListRedmineProjects(c *gin.Context) {
+	ctx := c.Request.Context()
+	tenantID := h.getTenantID(c)
+	if tenantID == 0 {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	var req struct {
+		DataSourceID string                 `json:"data_source_id"`
+		Credentials  map[string]interface{} `json:"credentials"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+	if req.DataSourceID != "" {
+		ds, status, msg := h.getOwnedDataSource(ctx, tenantID, req.DataSourceID)
+		if status != http.StatusOK {
+			c.JSON(status, gin.H{"error": msg})
+			return
+		}
+		if ds.Type != types.ConnectorTypeRedmine {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "data source is not Redmine"})
+			return
+		}
+	} else if len(req.Credentials) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "credentials are required"})
+		return
+	}
+
+	projects, err := h.service.ListRedmineProjects(ctx, req.DataSourceID, req.Credentials)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	options := make([]gin.H, 0, len(projects))
+	for _, project := range projects {
+		options = append(options, gin.H{
+			"identifier": project.ExternalID,
+			"name":       project.Name,
+			"parent_id":  project.ParentID,
+		})
+	}
+	c.JSON(http.StatusOK, options)
+}
+
 // @Summary List available resources in data source
 // @Description List resources available for sync in the external system. Pass parent_id to lazily load the direct children of a resource (used for large hierarchical sources such as Feishu wiki).
 // @Tags DataSource

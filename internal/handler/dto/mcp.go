@@ -35,6 +35,10 @@ type MCPServiceResponse struct {
 	AdvancedConfig    *types.MCPAdvancedConfig `json:"advanced_config,omitempty"`
 	StdioConfig       *types.MCPStdioConfig    `json:"stdio_config,omitempty"`
 	EnvVars           types.MCPEnvVars         `json:"env_vars,omitempty"`
+	// TemplateConfig is non-secret managed-template settings (e.g. the
+	// mcp-redmine upstream URL); stripped alongside URL for viewers without
+	// integration-detail access and for builtin services.
+	TemplateConfig *types.MCPTemplateConfig `json:"template_config,omitempty"`
 	IsBuiltin         bool                     `json:"is_builtin" extensions:"x-agent"`
 	CreatedAt         time.Time                `json:"created_at"`
 	UpdatedAt         time.Time                `json:"updated_at"`
@@ -100,6 +104,7 @@ func NewMCPServiceResponse(ctx context.Context, svc *types.MCPService) *MCPServi
 		AdvancedConfig:    svc.AdvancedConfig,
 		StdioConfig:       svc.StdioConfig,
 		EnvVars:           svc.EnvVars,
+		TemplateConfig:    svc.TemplateConfig,
 		IsBuiltin:         svc.IsBuiltin,
 		CreatedAt:         svc.CreatedAt,
 		UpdatedAt:         svc.UpdatedAt,
@@ -110,6 +115,7 @@ func NewMCPServiceResponse(ctx context.Context, svc *types.MCPService) *MCPServi
 		resp.URL = nil
 		resp.StdioConfig = nil
 		resp.AdvancedConfig = nil
+		resp.TemplateConfig = nil
 	}
 	if svc.AuthConfig != nil {
 		auth := &MCPAuthConfigResponse{
@@ -133,6 +139,7 @@ func NewMCPServiceResponse(ctx context.Context, svc *types.MCPService) *MCPServi
 		resp.EnvVars = nil
 		resp.StdioConfig = nil
 		resp.AuthConfig = nil
+		resp.TemplateConfig = nil
 	} else {
 		resp.Credentials = map[string]CredentialFieldMetadata{
 			"api_key":       {Configured: svc.AuthConfig != nil && svc.AuthConfig.APIKey != ""},

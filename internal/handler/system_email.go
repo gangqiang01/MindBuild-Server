@@ -7,11 +7,9 @@ package handler
 // the settings so UI edits take effect immediately; there is no
 // in-process SMTP client pool to invalidate.
 //
-// Core contract (per product requirement): sending email is strictly
-// best-effort. A missing relay, a failed send, or a nil settings service
-// must NEVER fail the business operation that triggered the send —
-// user creation returns 201 regardless, and the caller learns the mail
-// outcome via CreateSystemUserResponse.email_status.
+// Sending email is strictly best-effort. A missing relay, a failed send,
+// or a nil settings service must never fail the business operation that
+// triggered the send; handlers return the delivery status separately.
 
 import (
 	"context"
@@ -318,6 +316,74 @@ func buildNewUserEmail(cfg emailConfig, username, password string) (string, stri
 	return subject, b.String()
 }
 
+func buildPasswordResetEmail(cfg emailConfig, username, password string) (string, string) {
+	subject := "你的 MindBuilder 密码已重置"
+	var b strings.Builder
+	b.WriteString("你好，\r\n\r\n")
+	b.WriteString("管理员刚刚重置了你的 MindBuilder 账号密码，你的现有登录会话已失效。\r\n")
+	b.WriteString("你的新密码是：" + password + "\r\n\r\n")
+	if link := cfg.loginURL(); link != "" {
+		b.WriteString("登录地址：" + link + "\r\n\r\n")
+	}
+	b.WriteString("账号：" + username + "\r\n\r\n")
+	b.WriteString("为了账号安全，请登录后尽快修改密码。\r\n\r\n")
+	b.WriteString("（本邮件由系统自动发送，请勿回复。）\r\n")
+	return subject, b.String()
+}
+
+func buildReaddedUserEmail(cfg emailConfig, username string) (string, string) {
+	subject := "你的 MindBuilder 账号已重新加入空间"
+	var b strings.Builder
+	b.WriteString("你好，\r\n\r\n")
+	b.WriteString("管理员已将你的 MindBuilder 账号重新添加到一个空间。请使用原有密码登录。\r\n\r\n")
+	if link := cfg.loginURL(); link != "" {
+		b.WriteString("登录地址：" + link + "\r\n\r\n")
+	}
+	b.WriteString("账号：" + username + "\r\n\r\n")
+	b.WriteString("（本邮件由系统自动发送，请勿回复。）\r\n")
+	return subject, b.String()
+}
+
+func buildUserEnabledEmail(cfg emailConfig, username string) (string, string) {
+	subject := "你的 MindBuilder 账号已启用"
+	var b strings.Builder
+	b.WriteString("你好，\r\n\r\n")
+	b.WriteString("管理员已启用你的 MindBuilder 账号，你现在可以登录使用。\r\n\r\n")
+	if link := cfg.loginURL(); link != "" {
+		b.WriteString("登录地址：" + link + "\r\n\r\n")
+	}
+	b.WriteString("账号：" + username + "\r\n\r\n")
+	b.WriteString("（本邮件由系统自动发送，请勿回复。）\r\n")
+	return subject, b.String()
+}
+
+func notifyUserByEmail(
+	ctx context.Context,
+	svc interfaces.SystemSettingService,
+	user *types.User,
+	event, subject, body string,
+) (status, errDetail string) {
+	cfg := resolveEmailConfig(ctx, svc)
+	if !cfg.Enabled {
+		logger.Infof(ctx, "[email] %s notification skipped: email.enabled is off", event)
+		return emailStatusDisabled, ""
+	}
+	if !cfg.sendable() {
+		logger.Infof(ctx, "[email] %s notification skipped: SMTP is not configured", event)
+		return emailStatusNotConfigured, ""
+	}
+	if user == nil || strings.TrimSpace(user.Email) == "" {
+		logger.Warnf(ctx, "[email] %s notification skipped: user has no email address", event)
+		return emailStatusNotConfigured, ""
+	}
+	if err := sendMail(ctx, cfg, []string{user.Email}, subject, body); err != nil {
+		logger.Warnf(ctx, "[email] %s notification to %s failed: %v", event, user.Email, err)
+		return emailStatusFailed, err.Error()
+	}
+	logger.Infof(ctx, "[email] %s notification sent to %s", event, user.Email)
+	return emailStatusSent, ""
+}
+
 // notifyCreatedUserByEmail attempts the post-creation credential mail.
 // Returns the email_status for the API response plus the failure reason
 // (empty unless failed). Never returns an error that callers should
@@ -329,11 +395,9 @@ func notifyCreatedUserByEmail(ctx context.Context, svc interfaces.SystemSettingS
 	logger.Infof(ctx, "[email] notifyCreatedUser: user=%s email=%q hasPassword=%v enabled=%v host=%q port=%d encryption=%q from=%q",
 		user.ID, user.Email, password != "", cfg.Enabled, cfg.Host, cfg.Port, cfg.Encryption, cfg.effectiveFrom())
 	if !cfg.Enabled {
-		logger.Warnf(ctx, "[email] notifyCreatedUser skipped for user %s: email.enabled is off", user.ID)
 		return emailStatusDisabled, ""
 	}
 	if !cfg.sendable() {
-		logger.Warnf(ctx, "[email] notifyCreatedUser skipped for user %s: smtp_host is empty", user.ID)
 		return emailStatusNotConfigured, ""
 	}
 	if password == "" {
@@ -343,17 +407,8 @@ func notifyCreatedUserByEmail(ctx context.Context, svc interfaces.SystemSettingS
 		logger.Warnf(ctx, "[email] notifyCreatedUser skipped for user %s: no credential in hand", user.ID)
 		return emailStatusNotConfigured, ""
 	}
-	if strings.TrimSpace(user.Email) == "" {
-		logger.Warnf(ctx, "[email] notifyCreatedUser skipped for user %s: user has no email address", user.ID)
-		return emailStatusNotConfigured, ""
-	}
 	subject, body := buildNewUserEmail(cfg, user.Username, password)
-	if err := sendMail(ctx, cfg, []string{user.Email}, subject, body); err != nil {
-		logger.Warnf(ctx, "[email] credential email to %s failed (user %s already created): %v", user.Email, user.ID, err)
-		return emailStatusFailed, err.Error()
-	}
-	logger.Infof(ctx, "[email] credential email sent to %s for user %s", user.Email, user.ID)
-	return emailStatusSent, ""
+	return notifyUserByEmail(ctx, svc, user, "user-created", subject, body)
 }
 
 // notifyCreatedUser is the SystemHandler entry point; it delegates to the
@@ -361,6 +416,24 @@ func notifyCreatedUserByEmail(ctx context.Context, svc interfaces.SystemSettingS
 // share one implementation.
 func (h *SystemHandler) notifyCreatedUser(ctx context.Context, user *types.User, password string) (status, errDetail string) {
 	return notifyCreatedUserByEmail(ctx, h.systemSettingSvc, user, password)
+}
+
+func (h *SystemHandler) notifyPasswordReset(ctx context.Context, user *types.User, password string) (status, errDetail string) {
+	cfg := resolveEmailConfig(ctx, h.systemSettingSvc)
+	subject, body := buildPasswordResetEmail(cfg, user.Username, password)
+	return notifyUserByEmail(ctx, h.systemSettingSvc, user, "password-reset", subject, body)
+}
+
+func notifyReaddedUserByEmail(ctx context.Context, svc interfaces.SystemSettingService, user *types.User) (status, errDetail string) {
+	cfg := resolveEmailConfig(ctx, svc)
+	subject, body := buildReaddedUserEmail(cfg, user.Username)
+	return notifyUserByEmail(ctx, svc, user, "user-readded", subject, body)
+}
+
+func notifyUserEnabledByEmail(ctx context.Context, svc interfaces.SystemSettingService, user *types.User) (status, errDetail string) {
+	cfg := resolveEmailConfig(ctx, svc)
+	subject, body := buildUserEnabledEmail(cfg, user.Username)
+	return notifyUserByEmail(ctx, svc, user, "user-enabled", subject, body)
 }
 
 // TestEmailRequest is the body for POST /system/admin/email/test.
@@ -375,7 +448,7 @@ type TestEmailRequest struct {
 // @Description  Sends a short probe mail to `to` using the saved email.*
 //
 //	system settings. Use it to verify host/port/credentials
-//	before relying on user-creation notifications. Sending
+//	before relying on system user notification emails. Sending
 //	is synchronous and bounded by a 10s timeout.
 //
 // @Tags         System Admin

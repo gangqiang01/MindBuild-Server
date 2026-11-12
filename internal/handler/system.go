@@ -1637,11 +1637,19 @@ func (h *SystemHandler) SetUserStatus(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	response := gin.H{
 		"message":   "User status updated",
 		"user":      user.ToUserInfo(),
 		"is_active": user.IsActive,
-	})
+	}
+	if *req.IsActive && user.IsActive {
+		emailStatus, emailError := notifyUserEnabledByEmail(ctx, h.systemSettingSvc, user)
+		response["email_status"] = emailStatus
+		if emailError != "" {
+			response["email_error"] = emailError
+		}
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 // ResetUserPasswordRequest defines the system-administrator password-reset
@@ -1655,13 +1663,13 @@ type ResetUserPasswordRequest struct {
 
 // ResetUserPassword godoc
 // @Summary      Reset another user's password
-// @Description  Replace another user's local password and revoke all of their existing sessions (SystemAdmin only).
+// @Description  Replace another user's local password, revoke all of their existing sessions, and best-effort notify them by email (SystemAdmin only).
 // @Description  A system administrator cannot reset their own password through this endpoint; self-service password change still requires the old password.
 // @Tags         System Admin
 // @Accept       json
 // @Produce      json
 // @Param        request body ResetUserPasswordRequest true "Password reset request"
-// @Success      200  {object}  handler.ResetUserPasswordResponse  "Password reset successfully"
+// @Success      200  {object}  handler.ResetUserPasswordResponse  "Password reset successfully; email delivery status included"
 // @Failure      400  {object}  map[string]interface{}  "Invalid request, weak password, or self reset"
 // @Failure      403  {object}  map[string]interface{}  "Forbidden: not a system admin"
 // @Failure      404  {object}  map[string]interface{}  "User not found"
@@ -1703,12 +1711,18 @@ func (h *SystemHandler) ResetUserPassword(c *gin.Context) {
 	}
 
 	logger.Infof(ctx, "Password reset by system administrator for user ID: %s", user.ID)
+	emailStatus, emailErr := h.notifyPasswordReset(ctx, user, req.NewPassword)
 	h.emitAdminAudit(ctx, types.AuditActionSystemUserPasswordReset, user, map[string]any{
 		"target_email":     user.Email,
 		"target_username":  user.Username,
 		"sessions_revoked": true,
+		"email_status":     emailStatus,
 	})
-	c.JSON(http.StatusOK, gin.H{"message": "Password reset successfully"})
+	c.JSON(http.StatusOK, ResetUserPasswordResponse{
+		Message:     "Password reset successfully",
+		EmailStatus: emailStatus,
+		EmailError:  emailErr,
+	})
 }
 
 // CreateSystemUserResponse is the payload returned by

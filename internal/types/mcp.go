@@ -42,6 +42,11 @@ type MCPService struct {
 	AuthConfig     *MCPAuthConfig     `json:"auth_config"            gorm:"type:json"`
 	AdvancedConfig *MCPAdvancedConfig `json:"advanced_config"        gorm:"type:json"`
 	StdioConfig    *MCPStdioConfig    `json:"stdio_config,omitempty" gorm:"type:json"`     // Required for stdio transport
+	// TemplateConfig carries backend-managed template settings (e.g. the managed
+	// mcp-redmine upstream). Non-secret: the MCP client turns it into per-request
+	// headers (X-Redmine-URL / X-Redmine-Read-Only) instead of provisioning a
+	// container itself.
+	TemplateConfig *MCPTemplateConfig `json:"template_config,omitempty" gorm:"type:json"`
 	EnvVars        MCPEnvVars         `json:"env_vars,omitempty"     gorm:"type:json"`     // Environment variables for stdio
 	IsBuiltin      bool               `json:"is_builtin"             gorm:"default:false"` // Whether this is a builtin MCP service (visible to all workspaces)
 	CreatedAt      time.Time          `json:"created_at"`
@@ -136,6 +141,42 @@ type MCPAdvancedConfig struct {
 type MCPStdioConfig struct {
 	Command string   `json:"command"` // Command: "uvx" or "npx"
 	Args    []string `json:"args"`    // Command arguments array
+}
+
+// MCPTemplateConfig represents settings for a backend-managed template service,
+// such as the mcp-redmine container reached over the Docker network. The Go
+// service does not dial RedmineBaseURL itself — the MCP client forwards it to
+// the managed container as the per-request X-Redmine-URL header (and
+// X-Redmine-Read-Only when ReadOnly is set), so one shared container can serve
+// tenants pointing at different Redmine instances.
+type MCPTemplateConfig struct {
+	// Kind identifies the template, e.g. "redmine" for the Redmine MCP template.
+	Kind string `json:"kind,omitempty"`
+	// RedmineBaseURL is the upstream Redmine root URL (http/https, no trailing
+	// slash required). Forwarded to mcp-redmine as X-Redmine-URL.
+	RedmineBaseURL string `json:"redmine_base_url,omitempty"`
+	// ReadOnly forwards X-Redmine-Read-Only: 1 so the container rejects writes.
+	ReadOnly bool `json:"read_only,omitempty"`
+}
+
+// Value implements driver.Valuer for MCPTemplateConfig.
+func (c *MCPTemplateConfig) Value() (driver.Value, error) {
+	if c == nil {
+		return nil, nil
+	}
+	return json.Marshal(c)
+}
+
+// Scan implements sql.Scanner for MCPTemplateConfig.
+func (c *MCPTemplateConfig) Scan(value interface{}) error {
+	if value == nil {
+		return nil
+	}
+	b, ok := value.([]byte)
+	if !ok {
+		return nil
+	}
+	return json.Unmarshal(b, c)
 }
 
 // MCPEnvVars represents environment variables as a map

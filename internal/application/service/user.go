@@ -813,9 +813,9 @@ func (s *userService) ChangePassword(ctx context.Context, userID, oldPassword, n
 }
 
 // AdminResetPassword replaces a user's password without checking the previous
-// credential. Authorization and the cannot-reset-self rule live at the system
-// admin HTTP boundary; this service owns the security-critical persistence and
-// session invalidation so no caller can accidentally update only one of them.
+// credential. Callers must authorize the reset before invoking it; this
+// service owns password-policy validation, persistence, and session
+// invalidation so no caller can accidentally update only one of them.
 func (s *userService) AdminResetPassword(ctx context.Context, userID, newPassword string) error {
 	if err := ValidatePasswordPolicy(newPassword, s.complexPasswordEnabled(ctx)); err != nil {
 		return err

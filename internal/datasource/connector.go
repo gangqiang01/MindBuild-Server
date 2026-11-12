@@ -51,6 +51,12 @@ type Connector interface {
 	FetchIncremental(ctx context.Context, config *types.DataSourceConfig, cursor *types.SyncCursor) ([]types.FetchedItem, *types.SyncCursor, error)
 }
 
+// ProjectLister is implemented by connectors that can return a flat list of
+// project options independently from their hierarchical resource picker.
+type ProjectLister interface {
+	ListProjects(ctx context.Context, config *types.DataSourceConfig) ([]types.Resource, error)
+}
+
 // StreamHandler receives items and progress checkpoints emitted during a
 // streaming fetch. The service implements it to ingest each item as it arrives
 // (bounding memory to one item instead of the whole wiki) and to persist the

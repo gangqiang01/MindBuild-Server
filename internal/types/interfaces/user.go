@@ -39,7 +39,7 @@ type UserService interface {
 	ChangePassword(ctx context.Context, userID string, oldPassword, newPassword string) error
 	// AdminResetPassword replaces a user's password without requiring the old
 	// password and revokes all of that user's existing sessions. Callers must
-	// enforce the system-admin and cannot-reset-self guards before invoking it.
+	// authorize the reset before invoking it.
 	AdminResetPassword(ctx context.Context, userID string, newPassword string) error
 	// ValidatePassword validates user password
 	ValidatePassword(ctx context.Context, userID string, password string) error

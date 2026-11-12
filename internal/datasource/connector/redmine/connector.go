@@ -18,6 +18,7 @@ import (
 var (
 	_ datasource.Connector          = (*Connector)(nil)
 	_ datasource.StreamingConnector = (*Connector)(nil)
+	_ datasource.ProjectLister      = (*Connector)(nil)
 )
 
 // Connector is the Redmine data source connector. It is stateless: each call
@@ -134,6 +135,39 @@ func (c *Connector) ListResources(ctx context.Context, ds *types.DataSourceConfi
 	out := make([]types.Resource, 0, len(subs))
 	for _, p := range subs {
 		out = append(out, projectResource(p, co.base, len(children[p.Identifier]) > 0))
+	}
+	return out, nil
+}
+
+// ListProjects returns all Redmine projects visible to the configured API key
+// as a flat list for the project-selection form.
+func (c *Connector) ListProjects(ctx context.Context, ds *types.DataSourceConfig) ([]types.Resource, error) {
+	co, err := c.configured(ds)
+	if err != nil {
+		return nil, err
+	}
+	projects, err := co.client.projects(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	byID := make(map[int]project, len(projects))
+	children := make(map[int]bool, len(projects))
+	for _, p := range projects {
+		byID[p.ID] = p
+		if p.Parent != nil {
+			children[p.Parent.ID] = true
+		}
+	}
+	out := make([]types.Resource, 0, len(projects))
+	for _, p := range projects {
+		resource := projectResource(p, co.base, children[p.ID])
+		if p.Parent != nil {
+			if parent, ok := byID[p.Parent.ID]; ok {
+				resource.ParentID = parent.Identifier
+			}
+		}
+		out = append(out, resource)
 	}
 	return out, nil
 }

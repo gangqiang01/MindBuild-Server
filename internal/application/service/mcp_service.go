@@ -191,6 +191,13 @@ func (s *mcpServiceService) UpdateMCPService(
 		preAPIKeyHeader = existing.AuthConfig.APIKeyHeader
 		preClientID = existing.AuthConfig.ClientID
 	}
+	// Snapshot the managed-template config; it feeds per-request headers so a
+	// change requires rebuilding the MCP client connection.
+	var preTemplate *types.MCPTemplateConfig
+	if existing.TemplateConfig != nil {
+		cp := *existing.TemplateConfig
+		preTemplate = &cp
+	}
 
 	// CustomHeaders flows through main PUT (it's structural, not a secret) —
 	// nil preserves, non-nil replaces. Other AuthConfig fields (APIKey/Token)
@@ -258,6 +265,11 @@ func (s *mcpServiceService) UpdateMCPService(
 	if service.AdvancedConfig != nil {
 		existing.AdvancedConfig = service.AdvancedConfig
 	}
+	// Template config (e.g. mcp-redmine upstream URL) becomes per-request
+	// headers at client construction; nil with the update flag means "clear".
+	if updateFields["template_config"] || service.TemplateConfig != nil {
+		existing.TemplateConfig = service.TemplateConfig
+	}
 	if updateFields[types.MCPUpdateDropSecrets] {
 		// Empty rather than nil: the repository skips nil maps.
 		existing.Headers = types.MCPHeaders{}
@@ -320,6 +332,14 @@ func (s *mcpServiceService) UpdateMCPService(
 		(existing.AuthConfig.AuthType != preAuthType ||
 			existing.AuthConfig.APIKeyHeader != preAPIKeyHeader ||
 			existing.AuthConfig.ClientID != preClientID) {
+		configChanged = true
+	}
+	// Template config maps to per-request MCP headers; rebuild on any change,
+	// including set/clear. The struct holds only comparable scalar fields.
+	switch {
+	case (existing.TemplateConfig == nil) != (preTemplate == nil):
+		configChanged = true
+	case existing.TemplateConfig != nil && *existing.TemplateConfig != *preTemplate:
 		configChanged = true
 	}
 	name := secutils.SanitizeForLog(existing.Name)
