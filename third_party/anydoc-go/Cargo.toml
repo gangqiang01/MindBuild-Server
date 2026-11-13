@@ -35,6 +35,9 @@ anydoc = { path = "patched-anydoc" }
 
 # Mirrors the anydoc workspace's release profile: without it the archive keeps
 # every debug symbol and roughly doubles in size.
+# LTO must stay off: thin/fat LTO makes rustc embed .llvmbc/.llvmcmd sections,
+# and Go >=1.24 rejects archives carrying them in #cgo LDFLAGS
+# ("disallowed LTO section ... in #cgo LDFLAGS").
 [profile.release]
-lto = "thin"
+lto = false
 strip = "symbols"

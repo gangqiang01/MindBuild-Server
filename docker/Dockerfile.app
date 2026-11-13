@@ -97,6 +97,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             | sh -s -- -y --profile minimal --default-toolchain stable && \
         ./scripts/build-anydoc-lib.sh; \
+        # Go >=1.24 rejects #cgo LDFLAGS archives carrying LLVM LTO sections.
+        # LTO is already disabled in Cargo.toml; strip both sections from every
+        # target archive defensively (no || true: a real objcopy failure must
+        # fail the build instead of surfacing later as a Go link error).
+        find /app/third_party/anydoc-go/lib -name '*.a' -exec \
+            objcopy --remove-section=.llvmbc --remove-section=.llvmcmd {} +; \
     fi
 
 # Build the application with version info. Mount the Go build cache as well as
