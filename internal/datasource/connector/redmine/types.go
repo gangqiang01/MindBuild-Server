@@ -1,6 +1,7 @@
 package redmine
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -163,10 +164,79 @@ type namedRef struct {
 	Name string `json:"name"`
 }
 
+// redmineValue is a string-typed field that tolerates the non-string JSON
+// shapes Redmine emits for some fields. Multi-value custom fields (multi-select
+// list, multi-user, multi-version formats) encode "value" as a JSON array
+// rather than a string, which made a plain string field fail the whole issues
+// page decode ("cannot unmarshal array into Go struct field ... of type
+// string") and abort the project sync. Arrays are joined with ", ", matching
+// how Redmine's own UI presents multi-value fields; null/absent becomes "".
+// Numbers and booleans are rendered via fmt so an unexpected scalar never
+// breaks decoding either.
+type redmineValue string
+
+func (v *redmineValue) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		*v = ""
+		return nil
+	}
+	switch trimmed[0] {
+	case '"':
+		var s string
+		if err := json.Unmarshal(trimmed, &s); err != nil {
+			return err
+		}
+		*v = redmineValue(s)
+		return nil
+	case '[':
+		var raw []json.RawMessage
+		if err := json.Unmarshal(trimmed, &raw); err != nil {
+			return err
+		}
+		parts := make([]string, 0, len(raw))
+		for _, item := range raw {
+			parts = append(parts, redmineScalarToString(item))
+		}
+		*v = redmineValue(strings.Join(parts, ", "))
+		return nil
+	default:
+		// Number, bool or any other scalar: decode generically and render.
+		var scalar any
+		if err := json.Unmarshal(trimmed, &scalar); err != nil {
+			return err
+		}
+		if scalar == nil {
+			*v = ""
+			return nil
+		}
+		*v = redmineValue(fmt.Sprint(scalar))
+		return nil
+	}
+}
+
+// redmineScalarToString renders one element of a multi-value array. Strings
+// are unquoted; null becomes empty; any other scalar (number, bool) uses its
+// natural text form.
+func redmineScalarToString(raw json.RawMessage) string {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var scalar any
+	if err := json.Unmarshal(raw, &scalar); err != nil {
+		return string(raw)
+	}
+	if scalar == nil {
+		return ""
+	}
+	return fmt.Sprint(scalar)
+}
+
 type customField struct {
-	ID    int    `json:"id"`
-	Name  string `json:"name"`
-	Value string `json:"value"`
+	ID    int          `json:"id"`
+	Name  string       `json:"name"`
+	Value redmineValue `json:"value"`
 }
 
 type attachment struct {
@@ -179,10 +249,10 @@ type attachment struct {
 }
 
 type journalDetail struct {
-	Property string `json:"property"`
-	Name     string `json:"name"`
-	OldValue string `json:"old_value"`
-	NewValue string `json:"new_value"`
+	Property string       `json:"property"`
+	Name     string       `json:"name"`
+	OldValue redmineValue `json:"old_value"`
+	NewValue redmineValue `json:"new_value"`
 }
 
 type journal struct {

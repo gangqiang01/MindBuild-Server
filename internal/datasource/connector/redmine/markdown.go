@@ -58,8 +58,8 @@ func renderIssue(iss *issue, baseURL, projectID string, includeJournals bool, im
 	if len(iss.CustomFields) > 0 {
 		var cf []string
 		for _, f := range iss.CustomFields {
-			if strings.TrimSpace(f.Value) != "" {
-				cf = append(cf, f.Name+"="+f.Value)
+			if value := strings.TrimSpace(string(f.Value)); value != "" {
+				cf = append(cf, f.Name+"="+value)
 			}
 		}
 		if len(cf) > 0 {
