@@ -12,6 +12,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/agent/approval"
 	"github.com/Tencent/WeKnora/internal/agent/hitl"
 	"github.com/Tencent/WeKnora/internal/application/access"
+	appservice "github.com/Tencent/WeKnora/internal/application/service"
 	"github.com/Tencent/WeKnora/internal/errors"
 	"github.com/Tencent/WeKnora/internal/handler/dto"
 	"github.com/Tencent/WeKnora/internal/logger"
@@ -196,6 +197,10 @@ func (h *MCPServiceHandler) CreateMCPService(c *gin.Context) {
 	}
 
 	if err := h.mcpServiceService.CreateMCPService(ctx, &service); err != nil {
+		if stderrors.Is(err, appservice.ErrMCPServiceNameConflict) {
+			c.Error(errors.NewConflictError(err.Error()))
+			return
+		}
 		logger.ErrorWithFields(ctx, err, map[string]interface{}{"service_name": secutils.SanitizeForLog(service.Name)})
 		c.Error(errors.NewInternalServerError("Failed to create MCP service: " + err.Error()))
 		return
@@ -570,6 +575,10 @@ func (h *MCPServiceHandler) UpdateMCPService(c *gin.Context) {
 	}
 
 	if err := h.mcpServiceService.UpdateMCPService(ctx, &service, updateFields); err != nil {
+		if stderrors.Is(err, appservice.ErrMCPServiceNameConflict) {
+			c.Error(errors.NewConflictError(err.Error()))
+			return
+		}
 		logger.ErrorWithFields(ctx, err, map[string]interface{}{"service_id": secutils.SanitizeForLog(serviceID)})
 		c.Error(errors.NewInternalServerError("Failed to update MCP service: " + err.Error()))
 		return

@@ -42,6 +42,25 @@ func (r *mcpServiceRepository) GetByID(ctx context.Context, tenantID uint64, id 
 	return &service, nil
 }
 
+// GetByName retrieves an active MCP service by name within one tenant.
+// GORM's soft-delete scope automatically excludes deleted rows, so names of
+// deleted services remain reusable. Builtin services belong to their own
+// tenant and are intentionally not matched here.
+func (r *mcpServiceRepository) GetByName(ctx context.Context, tenantID uint64, name string) (*types.MCPService, error) {
+	var service types.MCPService
+	err := r.db.WithContext(ctx).
+		Where("tenant_id = ? AND name = ?", tenantID, name).
+		First(&service).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return &service, nil
+}
+
 // List retrieves all MCP services for a tenant
 // Includes builtin MCP services visible to all tenants
 func (r *mcpServiceRepository) List(ctx context.Context, tenantID uint64) ([]*types.MCPService, error) {

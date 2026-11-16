@@ -64,6 +64,15 @@ func cloneService(s *types.MCPService) *types.MCPService {
 	return &cp
 }
 
+func (r *fakeMCPRepo) GetByName(_ context.Context, tenantID uint64, name string) (*types.MCPService, error) {
+	for _, s := range r.store {
+		if s.TenantID == tenantID && s.Name == name {
+			return cloneService(s), nil
+		}
+	}
+	return nil, nil
+}
+
 func (r *fakeMCPRepo) List(_ context.Context, _ uint64) ([]*types.MCPService, error) {
 	out := make([]*types.MCPService, 0, len(r.store))
 	for _, s := range r.store {

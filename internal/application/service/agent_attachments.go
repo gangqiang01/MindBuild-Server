@@ -144,3 +144,42 @@ func (s *agentService) registerAttachmentReader(
 	reader.WithAttachments(source).WithAttachmentCopies(config.AttachmentSandboxCopies)
 	return source
 }
+
+// registerRedmineAttachmentTool offers redmine_upload_attachment when the
+// conversation has an authorized attachment reader AND the tenant owns at
+// least one enabled Redmine-template MCP service. The tool reads attachment
+// bytes server-side (the model never handles raw or base64 content) and drives
+// the managed mcp-redmine container's redmine_upload_content tool, optionally
+// linking the returned token straight to an issue. It is a runtime capability
+// like the sandbox file tools, not an allowed_tools checkbox: it appears only
+// when both prerequisites actually exist for this turn.
+func (s *agentService) registerRedmineAttachmentTool(
+	ctx context.Context, registry *tools.ToolRegistry, reader *attachment.Reader,
+) {
+	if reader == nil || s.fileService == nil || s.mcpManager == nil || s.mcpServiceService == nil {
+		return
+	}
+	tenantID, ok := types.TenantIDFromContext(ctx)
+	if !ok || tenantID == 0 {
+		return
+	}
+	all, err := s.mcpServiceService.ListMCPServices(ctx, tenantID)
+	if err != nil {
+		logger.Warnf(ctx, "redmine_upload_attachment not registered: list MCP services: %v", err)
+		return
+	}
+	redmineServices := make([]*types.MCPService, 0, 1)
+	for _, svc := range all {
+		if svc != nil && svc.Enabled && svc.TemplateConfig != nil &&
+			strings.EqualFold(strings.TrimSpace(svc.TemplateConfig.Kind), "redmine") {
+			redmineServices = append(redmineServices, svc)
+		}
+	}
+	if len(redmineServices) == 0 {
+		return
+	}
+	registry.RegisterTool(tools.NewRedmineAttachmentUploadTool(
+		reader, s.fileService, s.mcpManager, redmineServices))
+	logger.Infof(ctx, "Registered %s for %d Redmine MCP service(s)",
+		tools.ToolRedmineUploadAttachment, len(redmineServices))
+}

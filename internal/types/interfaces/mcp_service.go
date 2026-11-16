@@ -14,6 +14,13 @@ type MCPServiceRepository interface {
 	// GetByID retrieves an MCP service by ID and tenant ID
 	GetByID(ctx context.Context, tenantID uint64, id string) (*types.MCPService, error)
 
+	// GetByName retrieves an active (non-soft-deleted) MCP service by name
+	// within a single tenant. Soft-deleted rows are excluded by GORM, so a
+	// deleted service's name can be reused. Builtin services owned by other
+	// tenants are NOT matched: the (tenant_id, name) unique index only covers
+	// rows sharing the same tenant_id. Returns (nil, nil) when no match exists.
+	GetByName(ctx context.Context, tenantID uint64, name string) (*types.MCPService, error)
+
 	// List retrieves all MCP services for a tenant
 	List(ctx context.Context, tenantID uint64) ([]*types.MCPService, error)
 

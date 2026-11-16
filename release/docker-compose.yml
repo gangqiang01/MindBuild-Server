@@ -164,11 +164,14 @@ services:
   # 调用 Redmine 工具（redmine_request / redmine_get_issue / 上传下载等）。
   # 仅在启用 Redmine MCP 模板时按 profile 启动：
   #   docker compose --profile mcp-redmine up -d
-  # 需在 .env 设置 REDMINE_URL（server.py 导入时即读取，启动前必须有值）；
+  # REDMINE_URL 是可选的默认地址；模板配置会按请求传入 X-Redmine-URL。
   # REDMINE_API_KEY 不在此设置——请求时由 app 以 X-Redmine-API-Key 头携带（多用户归因）。
+  # 附件操作仅允许访问专用目录 ./data/redmine-uploads，不挂载 app 的完整文件存储。
   mcp-redmine:
     image: harbor.arfa.wise-paas.com/mindbuilder/mcp-redmine:${MCP_REDMINE_TAG:-v1.0.0}
     container_name: mindBuilder-mcp-redmine
+    extra_hosts:
+      - "advrm.advantech.com:10.193.213.224"
     environment:
       - TZ=${TZ:-Asia/Shanghai}
       - REDMINE_URL=${REDMINE_URL:-}

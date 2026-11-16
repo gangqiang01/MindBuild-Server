@@ -147,15 +147,26 @@ Only do this over trusted networks or TLS - the header carries a credential.
 | `REDMINE_REQUEST_INSTRUCTIONS` | No | - | Path to a file containing additional instructions for the redmine_request tool. I've found it works great to have the LLM generate that file after a session. ([example1](INSTRUCTIONS_EXAMPLE1.md) [example2](INSTRUCTIONS_EXAMPLE2.md)) |
 | `REDMINE_HEADERS` | No | (empty) | Custom HTTP headers to include in all requests. Format: `"Header1: Value1, Header2: Value2"`. Useful for proxies that require additional authentication (e.g., `X-Redmine-Username`) |
 | `REDMINE_RESPONSE_FORMAT` | No | `yaml` | Response format: `yaml` or `json`. Controls how API responses are formatted |
-| `REDMINE_ALLOWED_DIRECTORIES` | For upload/download | (disabled) | **Required for file operations.** Comma-separated list of directories where upload/download are allowed (e.g., `/tmp,/home/user/uploads`). Upload/download are disabled if not set for security |
+| `REDMINE_ALLOWED_DIRECTORIES` | For upload/download | (disabled) | **Required for file operations.** Comma-separated list of directories where upload/download are allowed (e.g., `/tmp,/home/user/uploads`). In Docker, mount the directory into the container. Upload/download are disabled if not set for security |
 | `REDMINE_DANGEROUSLY_ACCEPT_INVALID_CERTS` | No | (disabled) | Set to `1` to disable SSL certificate verification. Use only for self-signed certs in trusted environments |
 | `REDMINE_CA_BUNDLE` | No | (system CAs) | Path to a custom CA certificate bundle (e.g. `/path/to/ca.crt`) for Redmine instances using a private certificate chain. Prefer this over disabling verification |
 | `REDMINE_READ_ONLY` | No | (disabled) | Set to `1` to only allow GET requests. All writing operations (POST/PUT/DELETE, including uploads) are refused |
+| `REDMINE_UPLOAD_MAX_BYTES` | No | `10485760` (10 MiB) | Max decoded size accepted by `redmine_upload_content` (base64 in-memory uploads). Both the encoded argument length and decoded bytes are gated before any HTTP call |
 
 > **Note**: When running via Docker, the `REDMINE_REQUEST_INSTRUCTIONS` environment variable must point to a **path inside the container**, not a path on the host machine.
 > Therefore, if you want to use a local file, you need to **mount it into the container** at the correct location.
 
 > **Security Note**: The `REDMINE_ALLOWED_DIRECTORIES` setting protects against path traversal attacks. Paths containing `../` are resolved before validation, ensuring files can only be accessed within the allowed directories.
+
+### Docker Compose deployment directory
+
+The release Compose file mounts the dedicated host directory `release/data/redmine-uploads`
+at `/app/uploads` in the MCP container and allows file operations only inside that directory.
+Place a file there on the host, then pass its container path to `redmine_upload`, for example
+`/app/uploads/bug-4338.png`. The directory is separate from the app's local file storage;
+chat attachments are not copied into it — the Go service uploads them through
+`redmine_upload_content` instead, passing base64 bytes over MCP after its own session-level
+authorization and size checks.
 
 
 ## Getting Your Redmine API Key
@@ -227,6 +238,21 @@ Only do this over trusted networks or TLS - the header carries a credential.
       token: "7.ed32257a2ab0f7526c0d72c32994c58b131bb2c0775f7aa84aae01ea8397ea54"
   error: ""
   ```
+
+- **redmine_upload_content**
+  - Upload in-memory file content to Redmine and get an attachment token, for callers that hold
+    the bytes but have no shared filesystem with this server (e.g. the Go service forwarding an
+    authorized chat attachment). Does **not** require `REDMINE_ALLOWED_DIRECTORIES`.
+  - Inputs:
+    - `filename` (string): The file name Redmine stores
+    - `content` (string): Base64-encoded file bytes (whitespace tolerated)
+    - `content_type` (string, optional): MIME type, defaults to `application/octet-stream`
+    - `description` (string, optional): Attachment description
+  - Rejects invalid base64 and payloads above `REDMINE_UPLOAD_MAX_BYTES` without decoding or
+    sending anything. The base64 payload is never logged; only filename, decoded size and MIME are.
+  - The returned token is inert until linked to an issue with a `PUT /issues/{id}.json` whose body
+    carries `{"issue": {"uploads": [{"token", "filename", "content_type"}]}}`. The success response
+    echoes `filename` and `content_type` next to the token so the follow-up call needs no guesswork.
 
 - **redmine_get_issue**
   - Fetch a Redmine issue (bug) by ID with full details (subject, description, status, journals/history)

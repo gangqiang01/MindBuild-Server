@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/logger"
@@ -13,7 +14,30 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	secutils "github.com/Tencent/WeKnora/internal/utils"
+	"gorm.io/gorm"
 )
+
+// ErrMCPServiceNameConflict is returned when creating an MCP service whose
+// name is already used by another active service of the same tenant, or
+// renaming a service onto such a name. The (tenant_id, name) unique index is
+// the hard invariant; this sentinel lets handlers answer 409 instead of 500.
+var ErrMCPServiceNameConflict = errors.New("an MCP service with the same name already exists")
+
+// isMCPServiceDuplicateErr recognises the unique-index violation raised by
+// idx_tenant_name when two concurrent requests race past the in-service
+// GetByName check. gorm.ErrDuplicatedKey covers dialect-translated errors;
+// the string fallback catches Postgres "duplicate key value violates unique
+// constraint", SQLite "UNIQUE constraint failed" and MySQL "Duplicate entry".
+func isMCPServiceDuplicateErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, gorm.ErrDuplicatedKey) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "duplicate") || strings.Contains(msg, "unique constraint")
+}
 
 // mcpServiceService implements MCPServiceService interface
 type mcpServiceService struct {
@@ -45,6 +69,18 @@ func (s *mcpServiceService) CreateMCPService(ctx context.Context, service *types
 		return err
 	}
 
+	// Reject duplicate names up front for a friendly 409; the unique index
+	// remains the race backstop (translated below via isMCPServiceDuplicateErr).
+	if name := strings.TrimSpace(service.Name); name != "" {
+		existing, err := s.mcpServiceRepo.GetByName(ctx, service.TenantID, name)
+		if err != nil {
+			return fmt.Errorf("failed to look up MCP service by name: %w", err)
+		}
+		if existing != nil {
+			return ErrMCPServiceNameConflict
+		}
+	}
+
 	// Set default advanced config if not provided
 	if service.AdvancedConfig == nil {
 		service.AdvancedConfig = types.GetDefaultAdvancedConfig()
@@ -55,6 +91,9 @@ func (s *mcpServiceService) CreateMCPService(ctx context.Context, service *types
 	service.UpdatedAt = time.Now()
 
 	if err := s.mcpServiceRepo.Create(ctx, service); err != nil {
+		if isMCPServiceDuplicateErr(err) {
+			return ErrMCPServiceNameConflict
+		}
 		logger.GetLogger(ctx).Errorf("Failed to create MCP service: %v", err)
 		return fmt.Errorf("failed to create MCP service: %w", err)
 	}
@@ -136,6 +175,23 @@ func (s *mcpServiceService) UpdateMCPService(
 	// Builtin MCP services cannot be updated
 	if existing.IsBuiltin {
 		return fmt.Errorf("builtin MCP services cannot be updated")
+	}
+
+	// A rename must not collide with another active service of the same
+	// tenant. Keeping the current name (including only whitespace/case
+	// differences the caller did not intend) is allowed; the unique index
+	// still backstops concurrent renames at Update time below.
+	if updateFields["name"] {
+		newName := strings.TrimSpace(service.Name)
+		if newName != "" && newName != existing.Name {
+			other, err := s.mcpServiceRepo.GetByName(ctx, service.TenantID, newName)
+			if err != nil {
+				return fmt.Errorf("failed to look up MCP service by name: %w", err)
+			}
+			if other != nil && other.ID != existing.ID {
+				return ErrMCPServiceNameConflict
+			}
+		}
 	}
 
 	// Determine the final transport type after merge
@@ -287,6 +343,9 @@ func (s *mcpServiceService) UpdateMCPService(
 	existing.UpdatedAt = time.Now()
 
 	if err := s.mcpServiceRepo.Update(ctx, existing); err != nil {
+		if isMCPServiceDuplicateErr(err) {
+			return ErrMCPServiceNameConflict
+		}
 		logger.GetLogger(ctx).Errorf("Failed to update MCP service: %v", err)
 		return fmt.Errorf("failed to update MCP service: %w", err)
 	}

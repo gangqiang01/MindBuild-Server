@@ -33,8 +33,7 @@ ENV PATH="/app/.venv/bin:${PATH}"
 EXPOSE 8000
 
 # 以 HTTP streamable 启动。
-# - REDMINE_URL 必须在启动前注入（server.py 导入时即 os.environ['REDMINE_URL'] 读取），
-#   由 release/docker-compose.yml 的 REDMINE_URL 环境变量提供。
+# - REDMINE_URL 可作为默认地址；多用户模板会按请求传入 X-Redmine-URL。
 # - REDMINE_API_KEY 不在此设置：请求时由 app 以 X-Redmine-API-Key 头携带（多用户各自归因）。
 CMD ["/app/.venv/bin/python", "-m", "mcp_redmine.server", \
      "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8000"]

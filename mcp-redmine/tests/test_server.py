@@ -1,4 +1,5 @@
 """Tests for mcp_redmine.server. Run with: make tests-run"""
+import base64
 import os
 
 # Server module reads config from environment at import time
@@ -386,3 +387,92 @@ def test_known_arguments_still_work(capture_requests):
                                        "data": {"checklist": {"is_done": 1}}})
     assert not result.is_error
     assert capture_requests[0]["json"] == {"checklist": {"is_done": 1}}
+
+
+# redmine_upload_content: in-memory base64 uploads (chat-attachment path)
+
+def test_upload_content_decodes_and_posts_raw_bytes(capture_requests, monkeypatch):
+    captured = {}
+
+    def fake_request(path, method="get", **kwargs):
+        captured.update(kwargs)
+        captured["path"] = path
+        captured["method"] = method
+        return {"status_code": 201,
+                "body": {"upload": {"token": "tok-123", "id": 9}}, "error": ""}
+
+    monkeypatch.setattr(server, "request", fake_request)
+    payload = base64.b64encode(b"hello redmine").decode()
+    result = server.redmine_upload_content("note.txt", payload, "text/plain")
+
+    assert "status_code: 201" in result
+    assert captured["method"] == "post"
+    assert captured["path"] == "uploads.json"
+    assert captured["content"] == b"hello redmine"
+    assert captured["content_type"] == "application/octet-stream"
+    assert captured["params"]["filename"] == "note.txt"
+    # The token response echoes the linking fields, including our MIME default.
+    assert "content_type: text/plain" in result
+    assert "token: tok-123" in result
+
+
+def test_upload_content_tolerates_whitespace_and_defaults_mime(capture_requests, monkeypatch):
+    import textwrap
+    captured = {}
+
+    def fake_request(path, method="get", **kwargs):
+        captured.update(kwargs)
+        return {"status_code": 201, "body": {"upload": {"token": "t"}}, "error": ""}
+
+    monkeypatch.setattr(server, "request", fake_request)
+    wrapped = "\n".join(textwrap.wrap(base64.b64encode(b"x" * 100).decode(), 48))
+    server.redmine_upload_content("blob.bin", wrapped)
+    assert captured["content"] == b"x" * 100
+    # No content_type supplied -> generic binary MIME, carried back for the issue update.
+    assert captured["params"]["filename"] == "blob.bin"
+
+
+def test_upload_content_rejects_invalid_base64(capture_requests, monkeypatch):
+    sent = []
+    monkeypatch.setattr(server, "request",
+                        lambda *a, **k: sent.append((a, k)) or {"status_code": 201, "body": {}, "error": ""})
+    result = server.redmine_upload_content("bad.txt", "not!!!base64###")
+    assert "not valid base64" in result
+    assert sent == []  # nothing uploaded
+
+
+def test_upload_content_rejects_oversized_decoded_payload(capture_requests, monkeypatch):
+    monkeypatch.setattr(server, "REDMINE_UPLOAD_MAX_BYTES", 16)
+    sent = []
+    monkeypatch.setattr(server, "request",
+                        lambda *a, **k: sent.append((a, k)) or {"status_code": 201, "body": {}, "error": ""})
+    result = server.redmine_upload_content("big.bin", base64.b64encode(b"y" * 17).decode())
+    assert "too large" in result.lower()
+    assert sent == []
+
+
+def test_upload_content_rejects_oversized_encoded_payload_without_decoding(capture_requests, monkeypatch):
+    monkeypatch.setattr(server, "REDMINE_UPLOAD_MAX_BYTES", 16)
+
+    def boom(*_a, **_k):
+        raise AssertionError("request must not be called")
+
+    monkeypatch.setattr(server, "request", boom)
+    # Invalid base64 that is already too long: the size gate must fire first,
+    # proving huge payloads are rejected before b64decode allocates.
+    result = server.redmine_upload_content("huge.txt", "~" * 10_000)
+    assert "too large" in result.lower()
+
+
+def test_upload_content_requires_filename_and_content(capture_requests, monkeypatch):
+    monkeypatch.setattr(server, "request",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not upload")))
+    assert "filename is required" in server.redmine_upload_content("", "aGk=")
+    assert "content is required" in server.redmine_upload_content("x.txt", "")
+
+
+def test_upload_content_read_only_is_refused(capture_requests, monkeypatch):
+    monkeypatch.setattr(server, "REDMINE_READ_ONLY", True)
+    result = server.redmine_upload_content("ro.txt", base64.b64encode(b"ro").decode())
+    assert "Read-only mode is enabled" in result
+    assert capture_requests == []

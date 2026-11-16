@@ -1,4 +1,4 @@
-import os, yaml, pathlib, json, uuid
+import os, yaml, pathlib, json, uuid, base64
 from urllib.parse import urljoin
 
 import httpx
@@ -45,6 +45,25 @@ REDMINE_CA_BUNDLE = os.environ.get('REDMINE_CA_BUNDLE', '')
 
 # Read-only mode (enabled when set to "1") - only GET requests are allowed
 REDMINE_READ_ONLY = os.environ.get('REDMINE_READ_ONLY') == '1'
+
+# Max decoded size accepted by redmine_upload_content, in bytes. The payload
+# travels as base64 inside a JSON tool argument (Go chat attachments are read
+# server-side, never exposed to the model as raw bytes), so both the encoded
+# length and the decoded size are gated. Default 10 MiB matches Redmine's own
+# default attachment limit; override via REDMINE_UPLOAD_MAX_BYTES.
+DEFAULT_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
+
+
+def _env_positive_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, '')
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+REDMINE_UPLOAD_MAX_BYTES = _env_positive_int('REDMINE_UPLOAD_MAX_BYTES', DEFAULT_UPLOAD_MAX_BYTES)
 
 
 def resolve_redmine_url(ctx: Context = None) -> tuple[str, str]:
@@ -311,6 +330,79 @@ def redmine_upload(file_path: str, description: str = None, ctx: Context = None)
         return format_response(result)
     except Exception as e:
         return format_response({"status_code": 0, "body": None, "error": f"{e.__class__.__name__}: {e}"})
+
+@mcp.tool()
+def redmine_upload_content(filename: str, content: str, content_type: str = None,
+                           description: str = None, ctx: Context = None) -> str:
+    """
+    Upload in-memory file content to Redmine and get an attachment token.
+
+    Use this instead of redmine_upload when the caller already holds the file
+    bytes (e.g. a chat attachment read by the Go service) and has no shared
+    filesystem with this server. The returned token is not attached to anything
+    yet: link it to an issue with a redmine_request PUT to '/issues/{id}.json'
+    whose data carries {"issue": {"uploads": [{"token": <token>,
+    "filename": <filename>, "content_type": <content_type>}]}}.
+
+    Args:
+        filename: The file name Redmine stores (e.g. 'screenshot.png').
+        content: Base64-encoded file bytes (standard alphabet, whitespace tolerated).
+        content_type: MIME type of the file, e.g. 'image/png', 'application/pdf'.
+            Defaults to 'application/octet-stream'.
+        description: Optional description for the file.
+
+    Returns:
+        str: YAML string containing response status code, body and error message.
+             On success body.upload.token is the attachment token; body.upload also
+             echoes the effective filename and content_type for the follow-up
+             issue update.
+    """
+    log = get_logger(__name__)
+    filename = (filename or '').strip()
+    if not filename:
+        return format_response({"status_code": 0, "body": None, "error": "filename is required"})
+    if not content:
+        return format_response({"status_code": 0, "body": None, "error": "content is required"})
+
+    # Reject before decoding so an oversized argument never allocates the raw
+    # buffer. Base64 encodes 3 bytes per 4 characters; allow encoder padding.
+    compact = ''.join(content.split())
+    if len(compact) > (REDMINE_UPLOAD_MAX_BYTES + 2) // 3 * 4 + 4:
+        return format_response({"status_code": 0, "body": None,
+                                "error": f"File too large: decoded content would exceed the "
+                                         f"{REDMINE_UPLOAD_MAX_BYTES}-byte upload limit"})
+    try:
+        raw = base64.b64decode(compact, validate=True)
+    except Exception:
+        # Generic message on purpose: never echo payload fragments back.
+        return format_response({"status_code": 0, "body": None,
+                                "error": "content is not valid base64-encoded data"})
+    if len(raw) == 0:
+        return format_response({"status_code": 0, "body": None, "error": "decoded content is empty"})
+    if len(raw) > REDMINE_UPLOAD_MAX_BYTES:
+        return format_response({"status_code": 0, "body": None,
+                                "error": f"File too large: {len(raw)} bytes "
+                                         f"(max {REDMINE_UPLOAD_MAX_BYTES})"})
+
+    mime = (content_type or '').strip() or 'application/octet-stream'
+    params = {'filename': filename}
+    if description:
+        params['description'] = description
+
+    # Metadata only: the base64 payload and decoded bytes must never be logged.
+    log.info("redmine_upload_content: filename=%s size=%d content_type=%s",
+             filename, len(raw), mime)
+
+    result = request(path='uploads.json', method='post', params=params,
+                     content_type='application/octet-stream', content=raw, ctx=ctx)
+    # Echo the linking fields next to the token so the caller can build the
+    # issue-update uploads entry without re-deriving the MIME default.
+    if isinstance(result.get("body"), dict) and 200 <= result.get("status_code", 0) < 300:
+        upload = result["body"].setdefault("upload", {})
+        if isinstance(upload, dict):
+            upload.setdefault("filename", filename)
+            upload["content_type"] = mime
+    return format_response(result)
 
 @mcp.tool()
 def redmine_download(attachment_id: int, save_path: str, filename: str | None = None,
