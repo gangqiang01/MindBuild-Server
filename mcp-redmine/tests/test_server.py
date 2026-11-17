@@ -416,6 +416,46 @@ def test_upload_content_decodes_and_posts_raw_bytes(capture_requests, monkeypatc
     assert "token: tok-123" in result
 
 
+def test_upload_content_can_link_to_issue_in_same_call(monkeypatch):
+    calls = []
+
+    def fake_request(path, method="get", **kwargs):
+        calls.append((path, method, kwargs))
+        if path == "uploads.json":
+            return {"status_code": 201,
+                    "body": {"upload": {"token": "tok-link"}}, "error": ""}
+        return {"status_code": 204, "body": None, "error": ""}
+
+    monkeypatch.setattr(server, "request", fake_request)
+    result = server.redmine_upload_content(
+        "screen.png", base64.b64encode(b"image bytes").decode(), "image/png", issue_id=4338)
+
+    assert len(calls) == 2
+    assert calls[0][0:2] == ("uploads.json", "post")
+    assert calls[1][0:2] == ("issues/4338.json", "put")
+    assert calls[1][2]["data"] == {"issue": {"uploads": [{
+        "token": "tok-link",
+        "filename": "screen.png",
+        "content_type": "image/png",
+    }]}}
+    assert "issue_id: 4338" in result
+    assert "token: tok-link" in result
+
+
+def test_upload_content_reports_issue_link_failure(monkeypatch):
+    responses = iter([
+        {"status_code": 201, "body": {"upload": {"token": "tok-orphan"}}, "error": ""},
+        {"status_code": 404, "body": None, "error": "Issue not found"},
+    ])
+    monkeypatch.setattr(server, "request", lambda *a, **k: next(responses))
+    result = server.redmine_upload_content(
+        "screen.png", base64.b64encode(b"image bytes").decode(), issue_id=999)
+
+    assert "status_code: 404" in result
+    assert "Upload succeeded, but linking" in result
+    assert "token: tok-orphan" in result
+
+
 def test_upload_content_tolerates_whitespace_and_defaults_mime(capture_requests, monkeypatch):
     import textwrap
     captured = {}
@@ -469,6 +509,7 @@ def test_upload_content_requires_filename_and_content(capture_requests, monkeypa
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not upload")))
     assert "filename is required" in server.redmine_upload_content("", "aGk=")
     assert "content is required" in server.redmine_upload_content("x.txt", "")
+    assert "positive integer" in server.redmine_upload_content("x.txt", "aGk=", issue_id=0)
 
 
 def test_upload_content_read_only_is_refused(capture_requests, monkeypatch):

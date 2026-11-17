@@ -146,32 +146,46 @@ func (s *agentService) registerAttachmentReader(
 }
 
 // registerRedmineAttachmentTool offers redmine_upload_attachment when the
-// conversation has an authorized attachment reader AND the tenant owns at
-// least one enabled Redmine-template MCP service. The tool reads attachment
-// bytes server-side (the model never handles raw or base64 content) and drives
-// the managed mcp-redmine container's redmine_upload_content tool, optionally
-// linking the returned token straight to an issue. It is a runtime capability
-// like the sandbox file tools, not an allowed_tools checkbox: it appears only
-// when both prerequisites actually exist for this turn.
+// conversation has an authorized attachment reader and the agent selected an
+// enabled Redmine-capable MCP service. The tool reads attachment bytes
+// server-side and calls redmine_upload_content through the normal MCP policy
+// and approval path. It appears only when both prerequisites exist for the turn.
 func (s *agentService) registerRedmineAttachmentTool(
-	ctx context.Context, registry *tools.ToolRegistry, reader *attachment.Reader,
+	ctx context.Context,
+	registry *tools.ToolRegistry,
+	reader *attachment.Reader,
+	config *types.AgentConfig,
 ) {
-	if reader == nil || s.fileService == nil || s.mcpManager == nil || s.mcpServiceService == nil {
+	if reader == nil || s.fileService == nil || s.mcpManager == nil ||
+		s.mcpServiceService == nil || config == nil || len(config.MCPServices) == 0 {
 		return
 	}
 	tenantID, ok := types.TenantIDFromContext(ctx)
 	if !ok || tenantID == 0 {
 		return
 	}
-	all, err := s.mcpServiceService.ListMCPServices(ctx, tenantID)
+	selected, err := s.mcpServiceService.ListMCPServicesByIDs(ctx, tenantID, config.MCPServices)
 	if err != nil {
-		logger.Warnf(ctx, "redmine_upload_attachment not registered: list MCP services: %v", err)
+		logger.Warnf(ctx, "redmine_upload_attachment not registered: list selected MCP services: %v", err)
 		return
 	}
+	var metadataService interfaces.MCPMetadataService
+	if metadata, ok := s.mcpServiceService.(interfaces.MCPMetadataService); ok {
+		metadataService = metadata
+	}
 	redmineServices := make([]*types.MCPService, 0, 1)
-	for _, svc := range all {
-		if svc != nil && svc.Enabled && svc.TemplateConfig != nil &&
-			strings.EqualFold(strings.TrimSpace(svc.TemplateConfig.Kind), "redmine") {
+	for _, svc := range selected {
+		if svc == nil || !svc.Enabled {
+			continue
+		}
+		var metadata *types.MCPMetadata
+		if metadataService != nil {
+			metadata, err = metadataService.GetMCPMetadata(ctx, tenantID, svc.ID)
+			if err != nil {
+				logger.Warnf(ctx, "failed to inspect MCP metadata for service %q: %v", svc.Name, err)
+			}
+		}
+		if isRedmineMCPService(svc, metadata) {
 			redmineServices = append(redmineServices, svc)
 		}
 	}
@@ -179,7 +193,41 @@ func (s *agentService) registerRedmineAttachmentTool(
 		return
 	}
 	registry.RegisterTool(tools.NewRedmineAttachmentUploadTool(
-		reader, s.fileService, s.mcpManager, redmineServices))
+		reader, s.fileService, s.mcpManager, s.toolApprovalGate,
+		config.MCPAuthWaitTimeout, redmineServices))
 	logger.Infof(ctx, "Registered %s for %d Redmine MCP service(s)",
 		tools.ToolRedmineUploadAttachment, len(redmineServices))
+}
+
+func isRedmineMCPService(service *types.MCPService, metadata *types.MCPMetadata) bool {
+	if service == nil {
+		return false
+	}
+	if service.TemplateConfig != nil &&
+		strings.EqualFold(strings.TrimSpace(service.TemplateConfig.Kind), "redmine") {
+		return true
+	}
+	if strings.Contains(strings.ToLower(strings.Join([]string{
+		service.Name,
+		service.Description,
+		service.EffectiveUsageInstructions(),
+	}, " ")), "redmine") {
+		return true
+	}
+	if metadata == nil {
+		return false
+	}
+	if strings.Contains(strings.ToLower(strings.Join([]string{
+		metadata.ServerName,
+		metadata.ServerDescription,
+		metadata.Instructions,
+	}, " ")), "redmine") {
+		return true
+	}
+	for _, tool := range metadata.Tools {
+		if tool != nil && strings.EqualFold(tool.Name, "redmine_upload_content") {
+			return true
+		}
+	}
+	return false
 }

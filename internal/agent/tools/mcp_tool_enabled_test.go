@@ -75,3 +75,48 @@ func TestMCPToolExecuteMissingTenantFailClosed(t *testing.T) {
 	require.False(t, result.Success)
 	require.Equal(t, "MCP tool is disabled", result.Error)
 }
+
+type redactedApprovalArgsGate struct {
+	staticPolicyGate
+	pending approval.PendingRequest
+	marked  bool
+}
+
+func (g *redactedApprovalArgsGate) Action(context.Context, uint64, string, *types.MCPTool) policy.Action {
+	return policy.Action{Risk: policy.RiskWrite, Always: true}
+}
+
+func (g *redactedApprovalArgsGate) RequestAndWait(
+	_ context.Context, pending approval.PendingRequest,
+) (approval.Decision, error) {
+	g.pending = pending
+	return approval.Decision{Approved: true, ModifiedArgs: json.RawMessage(`{"filename":"edited.txt"}`)}, nil
+}
+
+func (g *redactedApprovalArgsGate) MarkExecuted(context.Context, string) {
+	g.marked = true
+}
+
+func TestMCPToolRedactedApprovalArgsHidePayloadAndRejectEdits(t *testing.T) {
+	gate := &redactedApprovalArgsGate{staticPolicyGate: staticPolicyGate{enabled: true}}
+	tool := &MCPTool{
+		service: &types.MCPService{ID: "svc-1", Name: "Redmine"},
+		mcpTool: &types.MCPTool{Name: "redmine_upload_content"},
+		gate:    gate,
+	}
+	ctx := types.WithAccessLevel(context.Background(), types.AssistantAccessConfirm)
+	ctx = context.WithValue(ctx, types.TenantIDContextKey, uint64(7))
+	ctx = WithToolExecContext(ctx, &ToolExecContext{EventBus: event.NewEventBus()})
+
+	result, err := tool.ExecuteWithApprovalArgs(
+		ctx,
+		json.RawMessage(`{"filename":"screen.png","content":"secret-base64"}`),
+		json.RawMessage(`{"filename":"screen.png","size_bytes":12}`),
+	)
+	require.NoError(t, err)
+	require.False(t, result.Success)
+	require.Contains(t, result.Error, "does not support argument edits")
+	require.JSONEq(t, `{"filename":"screen.png","size_bytes":12}`, string(gate.pending.Args))
+	require.NotContains(t, string(gate.pending.Args), "secret-base64")
+	require.True(t, gate.marked, "the resolved prompt must close even when argument edits are rejected")
+}

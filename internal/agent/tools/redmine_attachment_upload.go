@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Tencent/WeKnora/internal/agent/approval"
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/mcp"
 	"github.com/Tencent/WeKnora/internal/types"
@@ -26,13 +27,29 @@ const (
 
 	// Tool names exposed by the mcp-redmine container (must match server.py).
 	redmineUploadContentTool = "redmine_upload_content"
-	redmineRequestTool       = "redmine_request"
 
 	// defaultRedmineUploadMaxBytes mirrors mcp-redmine's REDMINE_UPLOAD_MAX_BYTES
 	// default (10 MiB). Base64 inflates bytes by ~1.33x inside the JSON tool
 	// argument, so the cap deliberately stays below MAX_FILE_SIZE_MB (50 MiB).
 	defaultRedmineUploadMaxBytes int64 = 10 * 1024 * 1024
 )
+
+var redmineUploadContentSpec = &types.MCPTool{
+	Name:        redmineUploadContentTool,
+	Description: "Upload base64-encoded attachment content to Redmine. Optionally link it to an issue.",
+	InputSchema: json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "filename": {"type": "string"},
+    "content": {"type": "string"},
+    "content_type": {"type": "string"},
+    "description": {"type": "string"},
+    "issue_id": {"type": "integer", "minimum": 1}
+  },
+  "required": ["filename", "content"],
+  "additionalProperties": false
+}`),
+}
 
 // redmineUploadMaxBytes reads WEKNORA_REDMINE_UPLOAD_MAX_MB (deploy-time knob,
 // same env-only pattern as internal/utils/filesize.go). The mcp-redmine
@@ -46,36 +63,61 @@ func redmineUploadMaxBytes() int64 {
 	return defaultRedmineUploadMaxBytes
 }
 
-// mcpToolCaller is the slice of *mcp.MCPManager this tool depends on. It is an
-// interface so unit tests inject a fake instead of opening a real connection.
-type mcpToolCaller interface {
-	GetOrCreateClient(ctx context.Context, service *types.MCPService) (mcp.MCPClient, error)
+type redmineMCPToolCaller interface {
+	Call(
+		ctx context.Context,
+		service *types.MCPService,
+		tool *types.MCPTool,
+		args json.RawMessage,
+		approvalArgs json.RawMessage,
+	) (*types.ToolResult, error)
+}
+
+type governedRedmineMCPToolCaller struct {
+	manager *mcp.MCPManager
+	gate    approval.MCPApproval
+	timeout int
+}
+
+func (c governedRedmineMCPToolCaller) Call(
+	ctx context.Context,
+	service *types.MCPService,
+	tool *types.MCPTool,
+	args json.RawMessage,
+	approvalArgs json.RawMessage,
+) (*types.ToolResult, error) {
+	return NewMCPTool(service, tool, c.manager, c.gate, c.timeout).
+		ExecuteWithApprovalArgs(ctx, args, approvalArgs)
 }
 
 // RedmineAttachmentUploadTool reads a file the user attached to this
 // conversation (authorization stays with the session AttachmentReader),
-// base64-encodes the bytes and asks the managed mcp-redmine container to upload
+// base64-encodes the bytes and asks the selected Redmine MCP service to upload
 // them. The raw bytes and their base64 form never appear in tool descriptions,
 // model arguments or logs: the model only names an attachment handle, exactly
 // as it does for read_file.
 type RedmineAttachmentUploadTool struct {
 	reader   interfaces.AttachmentReader
 	files    interfaces.FileService
-	caller   mcpToolCaller
-	services []*types.MCPService // enabled template_config.kind == "redmine" services
+	caller   redmineMCPToolCaller
+	services []*types.MCPService
 	maxBytes int64
 }
 
 func NewRedmineAttachmentUploadTool(
 	reader interfaces.AttachmentReader,
 	files interfaces.FileService,
-	caller mcpToolCaller,
+	manager *mcp.MCPManager,
+	gate approval.MCPApproval,
+	authWaitTimeout int,
 	services []*types.MCPService,
 ) *RedmineAttachmentUploadTool {
 	return &RedmineAttachmentUploadTool{
-		reader:   reader,
-		files:    files,
-		caller:   caller,
+		reader: reader,
+		files:  files,
+		caller: governedRedmineMCPToolCaller{
+			manager: manager, gate: gate, timeout: authWaitTimeout,
+		},
 		services: services,
 		maxBytes: redmineUploadMaxBytes(),
 	}
@@ -84,13 +126,14 @@ func NewRedmineAttachmentUploadTool(
 func (t *RedmineAttachmentUploadTool) Name() string { return ToolRedmineUploadAttachment }
 
 func (t *RedmineAttachmentUploadTool) Description() string {
-	return "Upload a file attached to this conversation to Redmine as an attachment token. " +
-		"Arguments name the attachment only (the attachment:// handle or file name shown by read_file); " +
-		"the file bytes are read server-side through the same session authorization as read_file and " +
-		"never exposed in the conversation. Pass issue_id to link the uploaded token to that bug in one " +
-		"step (the Redmine two-phase flow: upload then PUT issue uploads). Without issue_id the returned " +
-		"token must be attached to an issue yourself via the Redmine MCP redmine_request tool: " +
-		`PUT /issues/{id}.json with {"issue": {"uploads": [{"token", "filename", "content_type"}]}}.`
+	return "Upload a file attached to this conversation to Redmine, optionally attaching it to an issue. " +
+		"Use this for chat attachments instead of redmine_upload: that MCP tool can only read files on the " +
+		"Redmine server's own filesystem and cannot access /workspace or conversation attachments. " +
+		"Pass the attachment:// handle or exact file name shown by read_file; the application reads the " +
+		"original bytes with the same session authorization as read_file and sends them to the selected " +
+		"Redmine MCP server without exposing base64 in the conversation. Set issue_id to attach the upload " +
+		"to a Redmine issue in the same approved operation. Without issue_id, link the returned token to an " +
+		"issue using redmine_request."
 }
 
 func (t *RedmineAttachmentUploadTool) Parameters() json.RawMessage {
@@ -123,7 +166,7 @@ func (t *RedmineAttachmentUploadTool) Parameters() json.RawMessage {
 // redmineUploadAttachmentInput is the parsed tool argument.
 type redmineUploadAttachmentInput struct {
 	Attachment  string `json:"attachment"`
-	IssueID     int64  `json:"issue_id"`
+	IssueID     *int64 `json:"issue_id"`
 	Service     string `json:"service"`
 	Description string `json:"description"`
 }
@@ -135,7 +178,8 @@ type redmineUploadResponse struct {
 	StatusCode int    `yaml:"status_code" json:"status_code"`
 	Error      string `yaml:"error" json:"error"`
 	Body       struct {
-		Upload struct {
+		IssueID int64 `yaml:"issue_id" json:"issue_id"`
+		Upload  struct {
 			Token       string `yaml:"token" json:"token"`
 			Filename    string `yaml:"filename" json:"filename"`
 			ContentType string `yaml:"content_type" json:"content_type"`
@@ -143,15 +187,17 @@ type redmineUploadResponse struct {
 	} `yaml:"body" json:"body"`
 }
 
-type redmineRequestResponse struct {
-	StatusCode int    `yaml:"status_code" json:"status_code"`
-	Error      string `yaml:"error" json:"error"`
-}
-
 func (t *RedmineAttachmentUploadTool) Execute(ctx context.Context, args json.RawMessage) (*types.ToolResult, error) {
 	var input redmineUploadAttachmentInput
 	if err := json.Unmarshal(args, &input); err != nil {
 		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to parse arguments: %v", err)}, nil
+	}
+	var issueID int64
+	if input.IssueID != nil {
+		if *input.IssueID <= 0 {
+			return &types.ToolResult{Success: false, Error: "issue_id must be a positive integer when provided"}, nil
+		}
+		issueID = *input.IssueID
 	}
 	ref := strings.TrimSpace(input.Attachment)
 	if ref == "" {
@@ -204,16 +250,11 @@ func (t *RedmineAttachmentUploadTool) Execute(ctx context.Context, args json.Raw
 	mimeType := resolveAttachmentMIME(doc)
 	encoded := base64.StdEncoding.EncodeToString(raw)
 
-	// 3. Call the managed mcp-redmine container. Log metadata only — never the
+	// 3. Call the selected Redmine MCP service. Log metadata only — never the
 	// base64 payload or decoded bytes.
 	logger.GetLogger(ctx).Infof(
 		"redmine_upload_attachment: file=%q size=%d mime=%s service=%q issue_id=%d",
-		doc.FileName, len(raw), mimeType, svc.Name, input.IssueID)
-
-	client, err := t.caller.GetOrCreateClient(ctx, svc)
-	if err != nil {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("connect Redmine MCP service %q: %v", svc.Name, err)}, nil
-	}
+		doc.FileName, len(raw), mimeType, svc.Name, issueID)
 	uploadArgs := map[string]interface{}{
 		"filename":     doc.FileName,
 		"content":      encoded,
@@ -222,93 +263,84 @@ func (t *RedmineAttachmentUploadTool) Execute(ctx context.Context, args json.Raw
 	if desc := strings.TrimSpace(input.Description); desc != "" {
 		uploadArgs["description"] = desc
 	}
-	uploadResult, err := client.CallTool(ctx, redmineUploadContentTool, uploadArgs)
+	if issueID > 0 {
+		uploadArgs["issue_id"] = issueID
+	}
+	encodedArgs, err := json.Marshal(uploadArgs)
+	if err != nil {
+		return nil, fmt.Errorf("encode Redmine upload arguments: %w", err)
+	}
+	approvalArgs := map[string]interface{}{
+		"filename":     doc.FileName,
+		"content_type": mimeType,
+		"size_bytes":   len(raw),
+	}
+	if desc := strings.TrimSpace(input.Description); desc != "" {
+		approvalArgs["description"] = desc
+	}
+	if issueID > 0 {
+		approvalArgs["issue_id"] = issueID
+	}
+	encodedApprovalArgs, err := json.Marshal(approvalArgs)
+	if err != nil {
+		return nil, fmt.Errorf("encode Redmine upload approval details: %w", err)
+	}
+	uploadResult, err := t.caller.Call(ctx, svc, redmineUploadContentSpec, encodedArgs, encodedApprovalArgs)
 	if err != nil {
 		return &types.ToolResult{Success: false, Error: fmt.Sprintf("redmine_upload_content call failed: %v", err)}, nil
 	}
 	if uploadResult == nil {
 		return &types.ToolResult{Success: false, Error: "redmine_upload_content returned no result"}, nil
 	}
-	if uploadResult.IsError {
-		return &types.ToolResult{Success: false, Error: "redmine_upload_content refused the upload: " + extractContentText(uploadResult.Content)}, nil
+	if uploadResult.Suspend != nil {
+		return uploadResult, nil
 	}
-
+	if !uploadResult.Success {
+		return &types.ToolResult{Success: false, Error: "redmine_upload_content refused the upload: " + uploadResult.Error}, nil
+	}
+	responseText := strings.TrimSpace(uploadResult.Output)
+	if strings.HasPrefix(responseText, "[MCP tool result from ") {
+		_, responseText, _ = strings.Cut(responseText, "\n")
+		responseText = strings.TrimSpace(responseText)
+	}
 	var upload redmineUploadResponse
-	if err := yaml.Unmarshal([]byte(extractContentText(uploadResult.Content)), &upload); err != nil {
+	if err := yaml.Unmarshal([]byte(responseText), &upload); err != nil {
 		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to parse upload response: %v", err)}, nil
 	}
+	data := map[string]interface{}{}
+	if upload.Body.Upload.Token != "" {
+		data["token"] = upload.Body.Upload.Token
+		data["filename"] = doc.FileName
+		data["content_type"] = mimeType
+		data["size"] = len(raw)
+		if issueID > 0 {
+			data["issue_id"] = issueID
+		}
+	}
 	if upload.StatusCode < 200 || upload.StatusCode >= 300 || upload.Body.Upload.Token == "" {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf(
-			"Redmine rejected the upload (status %d): %s", upload.StatusCode, upload.Error)}, nil
+		return &types.ToolResult{Success: false, Data: data, Error: fmt.Sprintf(
+			"Redmine upload failed (status %d): %s", upload.StatusCode, upload.Error)}, nil
 	}
+	if issueID > 0 && upload.Body.IssueID != issueID {
+		return &types.ToolResult{Success: false, Data: data, Error: fmt.Sprintf(
+			"Redmine uploaded %q but did not confirm it was linked to issue #%d; rebuild the Redmine MCP server with attachment linking support",
+			doc.FileName, issueID)}, nil
+	}
+
 	token := upload.Body.Upload.Token
-
-	data := map[string]interface{}{
-		"token":        token,
-		"filename":     doc.FileName,
-		"content_type": mimeType,
-		"size":         len(raw),
-	}
-
-	// 4. Optional second phase: a Redmine upload token is inert until an issue
-	// update references it. When issue_id is given, perform that linkage here
-	// so the attachment cannot end up orphaned by a forgotten follow-up call.
-	if input.IssueID > 0 {
-		linkArgs := map[string]interface{}{
-			"path":   fmt.Sprintf("issues/%d.json", input.IssueID),
-			"method": "put",
-			"data": map[string]interface{}{
-				"issue": map[string]interface{}{
-					"uploads": []map[string]interface{}{{
-						"token":        token,
-						"filename":     doc.FileName,
-						"content_type": mimeType,
-					}},
-				},
-			},
-		}
-		linkResult, err := client.CallTool(ctx, redmineRequestTool, linkArgs)
-		if err != nil {
-			return &types.ToolResult{Success: false, Data: data, Error: fmt.Sprintf(
-				"upload succeeded with token %q but linking it to issue %d failed: %v",
-				token, input.IssueID, err)}, nil
-		}
-		if linkResult == nil || linkResult.IsError {
-			detail := "no result"
-			if linkResult != nil {
-				detail = extractContentText(linkResult.Content)
-			}
-			return &types.ToolResult{Success: false, Data: data, Error: fmt.Sprintf(
-				"upload succeeded with token %q but Redmine refused to link it to issue %d: %s",
-				token, input.IssueID, detail)}, nil
-		}
-		var link redmineRequestResponse
-		if err := yaml.Unmarshal([]byte(extractContentText(linkResult.Content)), &link); err != nil {
-			return &types.ToolResult{Success: false, Data: data, Error: fmt.Sprintf(
-				"failed to parse the issue %d update response: %v", input.IssueID, err)}, nil
-		}
-		if link.StatusCode < 200 || link.StatusCode >= 300 {
-			return &types.ToolResult{Success: false, Data: data, Error: fmt.Sprintf(
-				"upload token %q was created but linking issue %d failed (status %d): %s",
-				token, input.IssueID, link.StatusCode, link.Error)}, nil
-		}
-		data["issue_id"] = input.IssueID
+	if issueID > 0 {
 		return &types.ToolResult{
 			Success: true,
 			Data:    data,
-			Output: fmt.Sprintf("Uploaded %q (%d bytes, %s) to Redmine and linked it to issue #%d. Token %s is now attached to the bug.",
-				doc.FileName, len(raw), mimeType, input.IssueID, token),
+			Output: fmt.Sprintf("Uploaded %q (%d bytes, %s) to Redmine and linked it to issue #%d.",
+				doc.FileName, len(raw), mimeType, issueID),
 		}, nil
 	}
-
 	return &types.ToolResult{
 		Success: true,
 		Data:    data,
-		Output: fmt.Sprintf(
-			"Uploaded %q (%d bytes, %s) to Redmine. The token %s is not linked to any issue yet. "+
-				"To attach it to bug {id}, call the Redmine MCP redmine_request tool with method=put, "+
-				`path="issues/{id}.json", data={"issue": {"uploads": [{"token": %q, "filename": %q, "content_type": %q}]}}.`,
-			doc.FileName, len(raw), mimeType, token, token, doc.FileName, mimeType),
+		Output: fmt.Sprintf("Uploaded %q (%d bytes, %s) to Redmine. The attachment token %s is not linked to an issue yet; use redmine_request to attach it.",
+			doc.FileName, len(raw), mimeType, token),
 	}, nil
 }
 

@@ -239,7 +239,10 @@ def validate_path(file_path: str, must_exist: bool = True) -> tuple[str | None, 
 
     # Check path is within allowed directories
     if not any(path.is_relative_to(allowed) for allowed in REDMINE_ALLOWED_DIRECTORIES):
-        return f"Path not in allowed directories: {file_path}", None
+        return (f"Path not in allowed directories: {file_path}. This server only sees files inside "
+                "REDMINE_ALLOWED_DIRECTORIES on its own filesystem; paths inside another container or "
+                "sandbox (e.g. /workspace/...) are not reachable here. Upload such content via "
+                "redmine_upload_content instead, passing the file bytes as base64."), None
 
     if must_exist and not path.exists():
         return f"File not found: {path}", None
@@ -304,6 +307,12 @@ def redmine_upload(file_path: str, description: str = None, ctx: Context = None)
     """
     Upload a file to Redmine and get a token for attachment
 
+    Only works for files that already exist on THIS server's filesystem inside
+    REDMINE_ALLOWED_DIRECTORIES. Paths belonging to a caller's own container or
+    sandbox (for example chat attachments projected under /workspace) are not
+    visible here and will be rejected. Upload those by sending their bytes to
+    redmine_upload_content (base64) instead.
+
     Args:
         file_path: Fully qualified path to the file to upload (must be within REDMINE_ALLOWED_DIRECTORIES)
         description: Optional description for the file
@@ -333,16 +342,16 @@ def redmine_upload(file_path: str, description: str = None, ctx: Context = None)
 
 @mcp.tool()
 def redmine_upload_content(filename: str, content: str, content_type: str = None,
-                           description: str = None, ctx: Context = None) -> str:
+                           description: str = None, issue_id: int = None,
+                           ctx: Context = None) -> str:
     """
-    Upload in-memory file content to Redmine and get an attachment token.
+    Upload in-memory file content to Redmine and optionally attach it to an issue.
 
     Use this instead of redmine_upload when the caller already holds the file
     bytes (e.g. a chat attachment read by the Go service) and has no shared
-    filesystem with this server. The returned token is not attached to anything
-    yet: link it to an issue with a redmine_request PUT to '/issues/{id}.json'
-    whose data carries {"issue": {"uploads": [{"token": <token>,
-    "filename": <filename>, "content_type": <content_type>}]}}.
+    filesystem with this server. When issue_id is provided, this tool performs
+    the upload and issue update in one operation; otherwise the returned token
+    is not attached to anything yet and must be linked with redmine_request.
 
     Args:
         filename: The file name Redmine stores (e.g. 'screenshot.png').
@@ -350,12 +359,12 @@ def redmine_upload_content(filename: str, content: str, content_type: str = None
         content_type: MIME type of the file, e.g. 'image/png', 'application/pdf'.
             Defaults to 'application/octet-stream'.
         description: Optional description for the file.
+        issue_id: Optional Redmine issue ID to attach the upload to.
 
     Returns:
         str: YAML string containing response status code, body and error message.
-             On success body.upload.token is the attachment token; body.upload also
-             echoes the effective filename and content_type for the follow-up
-             issue update.
+             On success body.upload.token is the attachment token. When issue_id
+             is supplied, body.issue_id confirms the linked issue.
     """
     log = get_logger(__name__)
     filename = (filename or '').strip()
@@ -363,6 +372,11 @@ def redmine_upload_content(filename: str, content: str, content_type: str = None
         return format_response({"status_code": 0, "body": None, "error": "filename is required"})
     if not content:
         return format_response({"status_code": 0, "body": None, "error": "content is required"})
+    if issue_id is not None and (
+        isinstance(issue_id, bool) or not isinstance(issue_id, int) or issue_id <= 0
+    ):
+        return format_response({"status_code": 0, "body": None,
+                                "error": "issue_id must be a positive integer"})
 
     # Reject before decoding so an oversized argument never allocates the raw
     # buffer. Base64 encodes 3 bytes per 4 characters; allow encoder padding.
@@ -395,13 +409,31 @@ def redmine_upload_content(filename: str, content: str, content_type: str = None
 
     result = request(path='uploads.json', method='post', params=params,
                      content_type='application/octet-stream', content=raw, ctx=ctx)
-    # Echo the linking fields next to the token so the caller can build the
-    # issue-update uploads entry without re-deriving the MIME default.
     if isinstance(result.get("body"), dict) and 200 <= result.get("status_code", 0) < 300:
         upload = result["body"].setdefault("upload", {})
         if isinstance(upload, dict):
             upload.setdefault("filename", filename)
             upload["content_type"] = mime
+            token = upload.get("token")
+            if issue_id is not None and token:
+                link_result = request(
+                    path=f'issues/{issue_id}.json',
+                    method='put',
+                    data={'issue': {'uploads': [{
+                        'token': token,
+                        'filename': filename,
+                        'content_type': mime,
+                    }]}},
+                    ctx=ctx,
+                )
+                if 200 <= link_result.get("status_code", 0) < 300:
+                    result["body"]["issue_id"] = issue_id
+                else:
+                    result["status_code"] = link_result.get("status_code", 0)
+                    result["error"] = (
+                        f"Upload succeeded, but linking the attachment to issue "
+                        f"{issue_id} failed: {link_result.get('error', '')}"
+                    )
     return format_response(result)
 
 @mcp.tool()

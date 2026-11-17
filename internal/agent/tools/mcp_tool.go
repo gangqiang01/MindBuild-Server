@@ -144,6 +144,15 @@ func (t *MCPTool) callToolTimeout(engineTimeout time.Duration) time.Duration {
 
 // Execute executes the MCP tool
 func (t *MCPTool) Execute(ctx context.Context, args json.RawMessage) (*types.ToolResult, error) {
+	return t.ExecuteWithApprovalArgs(ctx, args, nil)
+}
+
+// ExecuteWithApprovalArgs allows an internal caller to keep sensitive arguments
+// out of approval prompts while still executing the exact original MCP request.
+// Modified arguments are rejected when a redacted approval view is supplied.
+func (t *MCPTool) ExecuteWithApprovalArgs(
+	ctx context.Context, args json.RawMessage, approvalArgs json.RawMessage,
+) (*types.ToolResult, error) {
 	logger.GetLogger(ctx).Infof("Executing MCP tool: %s from service: %s", t.mcpTool.Name, t.service.Name)
 
 	// Re-check the policy at call time as well as during registration. An agent
@@ -226,6 +235,10 @@ func (t *MCPTool) Execute(ctx context.Context, args json.RawMessage) (*types.Too
 							snapshot = nil
 						}
 					}
+					pendingArgs := args
+					if len(approvalArgs) > 0 {
+						pendingArgs = approvalArgs
+					}
 					decision, waitErr = t.gate.RequestAndWait(waitCtx, approval.PendingRequest{
 						Snapshot:        snapshot,
 						SnapshotVersion: snapshotVersion,
@@ -242,7 +255,7 @@ func (t *MCPTool) Execute(ctx context.Context, args json.RawMessage) (*types.Too
 						MCPToolName:        t.mcpTool.Name,
 						RegisteredToolName: t.Name(),
 						Description:        t.mcpTool.Description,
-						Args:               args,
+						Args:               pendingArgs,
 						ToolCallID:         meta.ToolCallID,
 						Grant:              grant,
 						GrantScope:         grantScope,
@@ -273,6 +286,13 @@ func (t *MCPTool) Execute(ctx context.Context, args json.RawMessage) (*types.Too
 					}, nil
 				}
 				defer t.gate.MarkExecuted(ctx, decision.PendingID)
+				if len(decision.ModifiedArgs) > 0 && len(approvalArgs) > 0 {
+					return &types.ToolResult{
+						Success: false,
+						Error: "This MCP call uses redacted approval details and does not support argument edits. " +
+							"Retry the operation with the intended attachment and issue.",
+					}, nil
+				}
 				if len(decision.ModifiedArgs) > 0 {
 					args = decision.ModifiedArgs
 					if err := t.ValidateArguments(args); err != nil {

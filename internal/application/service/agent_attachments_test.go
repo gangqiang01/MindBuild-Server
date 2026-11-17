@@ -213,6 +213,17 @@ func TestAgentAttachmentParseWaitConfiguration(t *testing.T) {
 	assert.Equal(t, defaultAgentAttachmentParseWait, agentAttachmentParseWait(nil))
 }
 
+func TestIsRedmineMCPService(t *testing.T) {
+	assert.True(t, isRedmineMCPService(&types.MCPService{Name: "ACN_Redmine"}, nil),
+		"generic MCP services named for Redmine should expose the attachment bridge")
+	assert.True(t, isRedmineMCPService(&types.MCPService{Name: "Issue Tracker"}, &types.MCPMetadata{
+		Tools: []*types.MCPTool{{Name: "redmine_upload_content"}},
+	}), "a synchronized Redmine upload tool identifies an otherwise generic service")
+	assert.False(t, isRedmineMCPService(&types.MCPService{Name: "GitHub"}, &types.MCPMetadata{
+		Tools: []*types.MCPTool{{Name: "create_issue"}},
+	}), "unrelated selected MCP services must not expose the Redmine bridge")
+}
+
 func TestAttachmentImageDeliveryDoesNotDependOnQuestionKeywords(t *testing.T) {
 	document := sessionDocument("report", ".pdf", types.TemporaryDocumentStatusReady, 50000, "# Report\ntext")
 	document.ImageRefs = types.JSON(`[{"url":"local://chart.png"},{"url":"local://page.png"}]`)

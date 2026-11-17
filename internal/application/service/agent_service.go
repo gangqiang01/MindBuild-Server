@@ -270,7 +270,7 @@ func (s *agentService) CreateAgentEngine(
 	s.registerSandboxFileTools(ctx, toolRegistry, sessionID, config)
 	s.registerWebPageFiles(ctx, toolRegistry, config, sessionID, assistantMessageID)
 	attachmentReader := s.registerAttachmentReader(ctx, toolRegistry, config, sessionID)
-	s.registerRedmineAttachmentTool(ctx, toolRegistry, attachmentReader)
+	s.registerRedmineAttachmentTool(ctx, toolRegistry, attachmentReader, config)
 	// Advertise cached service summaries independently of @mentions. Concrete
 	// tool definitions are published after describe, before the next model request.
 	toolRegistry.PrepareMCPTools(ctx)

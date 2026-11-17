@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Tencent/WeKnora/internal/mcp"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 )
@@ -38,12 +37,12 @@ func (r *fakeAttachmentReader) ReadImages(context.Context, string, []int, string
 
 func (r *fakeAttachmentReader) WaitTimeout() time.Duration { return time.Second }
 
-type fakeFileService struct {
+type fakeRedmineFileService struct {
 	interfaces.FileService // embed so only GetFile needs implementing
 	data                   map[string][]byte
 }
 
-func (f *fakeFileService) GetFile(_ context.Context, path string) (io.ReadCloser, error) {
+func (f *fakeRedmineFileService) GetFile(_ context.Context, path string) (io.ReadCloser, error) {
 	if d, ok := f.data[path]; ok {
 		return io.NopCloser(bytes.NewReader(d)), nil
 	}
@@ -51,82 +50,87 @@ func (f *fakeFileService) GetFile(_ context.Context, path string) (io.ReadCloser
 }
 
 type fakeMCPCall struct {
-	name string
-	args map[string]interface{}
+	name         string
+	args         map[string]interface{}
+	approvalArgs map[string]interface{}
 }
 
-type fakeRedmineMCPClient struct {
-	mcp.MCPClient // embed so only CallTool needs implementing
-	calls         []fakeMCPCall
-	results       map[string]*mcp.CallToolResult
-	err           error
+type fakeRedmineMCPCaller struct {
+	calls   []fakeMCPCall
+	results map[string]*types.ToolResult
+	err     error
+	suspend bool
 }
 
-func (c *fakeRedmineMCPClient) CallTool(
-	_ context.Context, name string, args map[string]interface{},
-) (*mcp.CallToolResult, error) {
-	c.calls = append(c.calls, fakeMCPCall{name: name, args: args})
+func (c *fakeRedmineMCPCaller) Call(
+	_ context.Context,
+	_ *types.MCPService,
+	tool *types.MCPTool,
+	raw json.RawMessage,
+	rawApproval json.RawMessage,
+) (*types.ToolResult, error) {
+	var args map[string]interface{}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, err
+	}
+	var approvalArgs map[string]interface{}
+	if err := json.Unmarshal(rawApproval, &approvalArgs); err != nil {
+		return nil, err
+	}
+	c.calls = append(c.calls, fakeMCPCall{name: tool.Name, args: args, approvalArgs: approvalArgs})
 	if c.err != nil {
 		return nil, c.err
 	}
-	return c.results[name], nil
-}
-
-type fakeRedmineCaller struct {
-	client     mcp.MCPClient
-	gotService *types.MCPService
-}
-
-func (f *fakeRedmineCaller) GetOrCreateClient(
-	_ context.Context, svc *types.MCPService,
-) (mcp.MCPClient, error) {
-	f.gotService = svc
-	return f.client, nil
+	if c.suspend {
+		return &types.ToolResult{
+			Success: false,
+			Suspend: &types.PromptSuspension{PromptID: "approval-1", Kind: types.AgentPromptKindToolApproval},
+		}, nil
+	}
+	return c.results[tool.Name], nil
 }
 
 // ---- helpers ----
 
 func newUploadDoc() *types.TemporaryDocument {
 	return &types.TemporaryDocument{
-		ID:         "doc-1",
+		ID:          "doc-1",
 		ResourceRef: "minio://tenants/1/doc-1/report.txt",
-		FileName:   "report.txt",
-		FileType:   ".txt",
-		MimeType:   "text/plain",
-		FileSize:   12,
+		FileName:    "report.txt",
+		FileType:    ".txt",
+		MimeType:    "text/plain",
+		FileSize:    12,
 	}
 }
 
 func newUploadTool(reader interfaces.AttachmentReader, files interfaces.FileService,
-	caller mcpToolCaller, services ...*types.MCPService,
+	caller redmineMCPToolCaller, services ...*types.MCPService,
 ) *RedmineAttachmentUploadTool {
-	t := NewRedmineAttachmentUploadTool(reader, files, caller, services)
+	t := NewRedmineAttachmentUploadTool(reader, files, nil, nil, 0, services)
+	t.caller = caller
 	t.maxBytes = 1024 // tests exercise the cap explicitly without 10 MiB fixtures
 	return t
 }
 
 func redmineService(id, name string) *types.MCPService {
 	return &types.MCPService{
-		ID:      id,
-		Name:    name,
-		Enabled: true,
-		TransportType: types.MCPTransportHTTPStreamable,
+		ID:             id,
+		Name:           name,
+		Enabled:        true,
+		TransportType:  types.MCPTransportHTTPStreamable,
 		TemplateConfig: &types.MCPTemplateConfig{Kind: "redmine"},
 	}
 }
 
-func uploadResultYAML(token string) *mcp.CallToolResult {
-	return &mcp.CallToolResult{Content: []mcp.ContentItem{{
-		Type: "text",
-		Text: "status_code: 201\nbody:\n  upload:\n    token: " + token + "\n    filename: report.txt\n    content_type: text/plain\nerror: \"\"\n",
-	}}}
-}
-
-func issueLinkResultYAML() *mcp.CallToolResult {
-	return &mcp.CallToolResult{Content: []mcp.ContentItem{{
-		Type: "text",
-		Text: "status_code: 200\nbody:\n  issue:\n    id: 42\nerror: \"\"\n",
-	}}}
+func uploadResultYAML(token string, issueID ...int64) *types.ToolResult {
+	body := "  upload:\n    token: " + token + "\n    filename: report.txt\n    content_type: text/plain\n"
+	if len(issueID) > 0 {
+		body += "  issue_id: 42\n"
+	}
+	return &types.ToolResult{
+		Success: true,
+		Output:  "status_code: 201\nbody:\n" + body + "error: \"\"\n",
+	}
 }
 
 func mustExecute(t *testing.T, tool *RedmineAttachmentUploadTool, raw string) *types.ToolResult {
@@ -152,13 +156,12 @@ func TestRedmineUploadAttachmentEncodesAndUploads(t *testing.T) {
 		Attachment: types.MessageAttachment{ID: doc.ID, FileName: doc.FileName},
 		Document:   doc,
 	}}
-	files := &fakeFileService{data: map[string][]byte{doc.ResourceRef: raw}}
-	mcpClient := &fakeRedmineMCPClient{results: map[string]*mcp.CallToolResult{
+	files := &fakeRedmineFileService{data: map[string][]byte{doc.ResourceRef: raw}}
+	mcpClient := &fakeRedmineMCPCaller{results: map[string]*types.ToolResult{
 		redmineUploadContentTool: uploadResultYAML("tok-abc"),
 	}}
-	caller := &fakeRedmineCaller{client: mcpClient}
 	svc := redmineService("svc-1", "Redmine")
-	tool := newUploadTool(reader, files, caller, svc)
+	tool := newUploadTool(reader, files, mcpClient, svc)
 
 	result := mustExecute(t, tool, `{"attachment":"attachment://att_deadbeef"}`)
 	if !result.Success {
@@ -175,8 +178,12 @@ func TestRedmineUploadAttachmentEncodesAndUploads(t *testing.T) {
 	if decoded, err := base64.StdEncoding.DecodeString(gotContent); err != nil || !bytes.Equal(decoded, raw) {
 		t.Fatalf("content is not the base64 of the attachment bytes: %v", err)
 	}
-	if caller.gotService != svc {
-		t.Fatal("upload must target the resolved Redmine service")
+	approval := mcpClient.calls[0].approvalArgs
+	if _, containsPayload := approval["content"]; containsPayload {
+		t.Fatal("base64 file content must not appear in the approval prompt")
+	}
+	if approval["filename"] != "report.txt" || approval["size_bytes"] != float64(len(raw)) {
+		t.Fatalf("approval prompt must identify the file without exposing it: %+v", approval)
 	}
 	if result.Data["token"] != "tok-abc" {
 		t.Fatalf("token missing from structured result: %+v", result.Data)
@@ -190,33 +197,71 @@ func TestRedmineUploadAttachmentLinksTokenToIssue(t *testing.T) {
 	raw := []byte("bug evidence")
 	doc := newUploadDoc()
 	reader := &fakeAttachmentReader{doc: &interfaces.AttachmentDocument{Document: doc}}
-	files := &fakeFileService{data: map[string][]byte{doc.ResourceRef: raw}}
-	mcpClient := &fakeRedmineMCPClient{results: map[string]*mcp.CallToolResult{
-		redmineUploadContentTool: uploadResultYAML("tok-link"),
-		redmineRequestTool:       issueLinkResultYAML(),
+	files := &fakeRedmineFileService{data: map[string][]byte{doc.ResourceRef: raw}}
+	mcpClient := &fakeRedmineMCPCaller{results: map[string]*types.ToolResult{
+		redmineUploadContentTool: uploadResultYAML("tok-link", 42),
 	}}
-	tool := newUploadTool(reader, files, &fakeRedmineCaller{client: mcpClient}, redmineService("svc-1", "Redmine"))
+	tool := newUploadTool(reader, files, mcpClient, redmineService("svc-1", "Redmine"))
 
 	result := mustExecute(t, tool, `{"attachment":"report.txt","issue_id":42}`)
 	if !result.Success {
 		t.Fatalf("link flow failed: %s", result.Error)
 	}
-	if len(mcpClient.calls) != 2 {
-		t.Fatalf("expected upload + issue update, got %d calls", len(mcpClient.calls))
+	if len(mcpClient.calls) != 1 {
+		t.Fatalf("expected one approved upload-and-link MCP call, got %d calls", len(mcpClient.calls))
 	}
-	link := mcpClient.calls[1]
-	if link.name != redmineRequestTool || link.args["method"] != "put" || link.args["path"] != "issues/42.json" {
-		t.Fatalf("unexpected issue-link call: %+v", link.args)
-	}
-	data, _ := link.args["data"].(map[string]interface{})
-	issue, _ := data["issue"].(map[string]interface{})
-	uploads, _ := issue["uploads"].([]map[string]interface{})
-	if len(uploads) != 1 || uploads[0]["token"] != "tok-link" ||
-		uploads[0]["filename"] != "report.txt" || uploads[0]["content_type"] != "text/plain" {
-		t.Fatalf("issue update carries the wrong uploads entry: %+v", data)
+	if mcpClient.calls[0].args["issue_id"] != float64(42) {
+		t.Fatalf("issue ID must be included in the approved upload call: %+v", mcpClient.calls[0].args)
 	}
 	if result.Data["issue_id"] != int64(42) {
 		t.Fatalf("structured result should record the linked issue, got %+v", result.Data)
+	}
+}
+
+func TestRedmineUploadAttachmentPropagatesApprovalSuspension(t *testing.T) {
+	doc := newUploadDoc()
+	reader := &fakeAttachmentReader{doc: &interfaces.AttachmentDocument{Document: doc}}
+	files := &fakeRedmineFileService{data: map[string][]byte{doc.ResourceRef: []byte("evidence")}}
+	tool := newUploadTool(reader, files, &fakeRedmineMCPCaller{suspend: true}, redmineService("svc-1", "Redmine"))
+
+	result := mustExecute(t, tool, `{"attachment":"report.txt","issue_id":42}`)
+
+	if result.Suspend == nil || result.Suspend.PromptID != "approval-1" {
+		t.Fatalf("approval suspension must propagate to the agent engine: %+v", result)
+	}
+}
+
+func TestRedmineUploadAttachmentRejectsInvalidIssueID(t *testing.T) {
+	caller := &fakeRedmineMCPCaller{results: map[string]*types.ToolResult{}}
+	tool := newUploadTool(&fakeAttachmentReader{}, &fakeRedmineFileService{}, caller,
+		redmineService("svc-1", "Redmine"))
+
+	result := mustExecute(t, tool, `{"attachment":"report.txt","issue_id":0}`)
+
+	if result.Success || !contains(result.Error, "issue_id must be a positive integer") {
+		t.Fatalf("invalid issue ID should be rejected before file access: %+v", result)
+	}
+	if len(caller.calls) != 0 {
+		t.Fatal("invalid issue ID must not call the Redmine MCP service")
+	}
+}
+
+func TestRedmineUploadAttachmentRequiresIssueLinkConfirmation(t *testing.T) {
+	doc := newUploadDoc()
+	reader := &fakeAttachmentReader{doc: &interfaces.AttachmentDocument{Document: doc}}
+	files := &fakeRedmineFileService{data: map[string][]byte{doc.ResourceRef: []byte("evidence")}}
+	caller := &fakeRedmineMCPCaller{results: map[string]*types.ToolResult{
+		redmineUploadContentTool: uploadResultYAML("tok-unlinked"),
+	}}
+	tool := newUploadTool(reader, files, caller, redmineService("svc-1", "Redmine"))
+
+	result := mustExecute(t, tool, `{"attachment":"report.txt","issue_id":42}`)
+
+	if result.Success || !contains(result.Error, "did not confirm it was linked") {
+		t.Fatalf("must not claim success when issue linkage is unconfirmed: %+v", result)
+	}
+	if result.Data["token"] != "tok-unlinked" {
+		t.Fatalf("preserve the created token when issue linkage is unconfirmed: %+v", result.Data)
 	}
 }
 
@@ -224,9 +269,9 @@ func TestRedmineUploadAttachmentRejectsOversizeBeforeReading(t *testing.T) {
 	doc := newUploadDoc()
 	doc.FileSize = 2048 // tool cap is 1024
 	reader := &fakeAttachmentReader{doc: &interfaces.AttachmentDocument{Document: doc}}
-	files := &fakeFileService{data: map[string][]byte{}} // any GetFile call would miss
-	mcpClient := &fakeRedmineMCPClient{results: map[string]*mcp.CallToolResult{}}
-	tool := newUploadTool(reader, files, &fakeRedmineCaller{client: mcpClient}, redmineService("s", "Redmine"))
+	files := &fakeRedmineFileService{data: map[string][]byte{}} // any GetFile call would miss
+	mcpClient := &fakeRedmineMCPCaller{results: map[string]*types.ToolResult{}}
+	tool := newUploadTool(reader, files, mcpClient, redmineService("s", "Redmine"))
 
 	result := mustExecute(t, tool, `{"attachment":"report.txt"}`)
 	if result.Success || !contains(result.Error, "upload limit") {
@@ -239,8 +284,8 @@ func TestRedmineUploadAttachmentRejectsOversizeBeforeReading(t *testing.T) {
 
 func TestRedmineUploadAttachmentRejectsUnauthorizedRef(t *testing.T) {
 	reader := &fakeAttachmentReader{err: errors.New("attachment is not in this conversation: nope")}
-	mcpClient := &fakeRedmineMCPClient{results: map[string]*mcp.CallToolResult{}}
-	tool := newUploadTool(reader, &fakeFileService{}, &fakeRedmineCaller{client: mcpClient},
+	mcpClient := &fakeRedmineMCPCaller{results: map[string]*types.ToolResult{}}
+	tool := newUploadTool(reader, &fakeRedmineFileService{}, mcpClient,
 		redmineService("s", "Redmine"))
 
 	result := mustExecute(t, tool, `{"attachment":"attachment://att_unknown"}`)
@@ -255,14 +300,11 @@ func TestRedmineUploadAttachmentRejectsUnauthorizedRef(t *testing.T) {
 func TestRedmineUploadAttachmentPropagatesMCPError(t *testing.T) {
 	doc := newUploadDoc()
 	reader := &fakeAttachmentReader{doc: &interfaces.AttachmentDocument{Document: doc}}
-	files := &fakeFileService{data: map[string][]byte{doc.ResourceRef: []byte("x")}}
-	mcpClient := &fakeRedmineMCPClient{results: map[string]*mcp.CallToolResult{
-		redmineUploadContentTool: {
-			IsError: true,
-			Content: []mcp.ContentItem{{Type: "text", Text: "status_code: 401\nerror: Unauthorized"}},
-		},
+	files := &fakeRedmineFileService{data: map[string][]byte{doc.ResourceRef: []byte("x")}}
+	mcpClient := &fakeRedmineMCPCaller{results: map[string]*types.ToolResult{
+		redmineUploadContentTool: {Success: false, Error: "Unauthorized"},
 	}}
-	tool := newUploadTool(reader, files, &fakeRedmineCaller{client: mcpClient}, redmineService("s", "Redmine"))
+	tool := newUploadTool(reader, files, mcpClient, redmineService("s", "Redmine"))
 
 	result := mustExecute(t, tool, `{"attachment":"report.txt"}`)
 	if result.Success || !contains(result.Error, "Unauthorized") {
@@ -273,11 +315,11 @@ func TestRedmineUploadAttachmentPropagatesMCPError(t *testing.T) {
 func TestRedmineUploadAttachmentRequiresExplicitServiceWhenAmbiguous(t *testing.T) {
 	doc := newUploadDoc()
 	reader := &fakeAttachmentReader{doc: &interfaces.AttachmentDocument{Document: doc}}
-	files := &fakeFileService{data: map[string][]byte{doc.ResourceRef: []byte("x")}}
-	mcpClient := &fakeRedmineMCPClient{results: map[string]*mcp.CallToolResult{
+	files := &fakeRedmineFileService{data: map[string][]byte{doc.ResourceRef: []byte("x")}}
+	mcpClient := &fakeRedmineMCPCaller{results: map[string]*types.ToolResult{
 		redmineUploadContentTool: uploadResultYAML("t"),
 	}}
-	tool := newUploadTool(reader, files, &fakeRedmineCaller{client: mcpClient},
+	tool := newUploadTool(reader, files, mcpClient,
 		redmineService("s1", "Redmine A"), redmineService("s2", "Redmine B"))
 
 	ambiguous := mustExecute(t, tool, `{"attachment":"report.txt"}`)
@@ -295,11 +337,11 @@ func TestRedmineUploadAttachmentMIMEFallback(t *testing.T) {
 	doc.MimeType = ""
 	doc.FileType = ".weird"
 	reader := &fakeAttachmentReader{doc: &interfaces.AttachmentDocument{Document: doc}}
-	files := &fakeFileService{data: map[string][]byte{doc.ResourceRef: []byte("x")}}
-	mcpClient := &fakeRedmineMCPClient{results: map[string]*mcp.CallToolResult{
+	files := &fakeRedmineFileService{data: map[string][]byte{doc.ResourceRef: []byte("x")}}
+	mcpClient := &fakeRedmineMCPCaller{results: map[string]*types.ToolResult{
 		redmineUploadContentTool: uploadResultYAML("t"),
 	}}
-	tool := newUploadTool(reader, files, &fakeRedmineCaller{client: mcpClient}, redmineService("s", "Redmine"))
+	tool := newUploadTool(reader, files, mcpClient, redmineService("s", "Redmine"))
 
 	_ = mustExecute(t, tool, `{"attachment":"report.txt"}`)
 	if got := mcpClient.calls[0].args["content_type"]; got != "application/octet-stream" {

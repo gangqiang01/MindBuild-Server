@@ -176,6 +176,9 @@ services:
       - TZ=${TZ:-Asia/Shanghai}
       - REDMINE_URL=${REDMINE_URL:-}
       - REDMINE_READ_ONLY=${REDMINE_READ_ONLY:-}
+      - REDMINE_ALLOWED_DIRECTORIES=/app/uploads
+    volumes:
+      - ./data/redmine-uploads:/app/uploads
     networks:
       - mindBuilder-network
     restart: unless-stopped
